@@ -18,12 +18,29 @@ fn main() {
                 // Parse and execute the command
                 let command = input.trim();
                 if !command.is_empty() {
+                    // Split command into parts
+                    let parts: Vec<&str> = command.split_whitespace().collect();
+                    
+                    if parts.is_empty() {
+                        continue;
+                    }
+                    
+                    let cmd = parts[0];
+                    
                     // Check for exit builtin
-                    if command == "exit" {
+                    if cmd == "exit" {
                         process::exit(0);
-                    } else {
+                    }
+                    // Check for echo builtin
+                    else if cmd == "echo" {
+                        // Get all arguments after "echo"
+                        let args = &parts[1..];
+                        // Print arguments separated by spaces with newline at end
+                        println!("{}", args.join(" "));
+                    }
+                    else {
                         // Command not found
-                        println!("{}: command not found", command);
+                        println!("{}: command not found", cmd);
                     }
                 }
             }
