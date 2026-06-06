@@ -1,6 +1,10 @@
 use std::io::{self, Write};
 use std::process;
 
+fn is_builtin(cmd: &str) -> bool {
+    matches!(cmd, "echo" | "exit" | "type")
+}
+
 fn main() {
     loop {
         // Display the prompt
@@ -37,6 +41,20 @@ fn main() {
                         let args = &parts[1..];
                         // Print arguments separated by spaces with newline at end
                         println!("{}", args.join(" "));
+                    }
+                    // Check for type builtin
+                    else if cmd == "type" {
+                        if parts.len() < 2 {
+                            println!("type: missing argument");
+                            continue;
+                        }
+                        
+                        let target_cmd = parts[1];
+                        if is_builtin(target_cmd) {
+                            println!("{} is a shell builtin", target_cmd);
+                        } else {
+                            println!("{}: not found", target_cmd);
+                        }
                     }
                     else {
                         // Command not found
