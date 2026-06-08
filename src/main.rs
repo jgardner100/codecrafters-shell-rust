@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 fn is_builtin(cmd: &str) -> bool {
-    matches!(cmd, "echo" | "exit" | "type")
+    matches!(cmd, "echo" | "exit" | "type" | "pwd")
 }
 
 fn find_executable_in_path(command: &str) -> Option<String> {
@@ -138,6 +138,18 @@ fn main() {
                         } else {
                             // Not found anywhere
                             println!("{}: not found", target_cmd);
+                        }
+                    }
+                    // Check for pwd builtin
+                    else if cmd == "pwd" {
+                        // Get the current working directory
+                        match env::current_dir() {
+                            Ok(path) => {
+                                println!("{}", path.display());
+                            }
+                            Err(e) => {
+                                eprintln!("pwd: {}", e);
+                            }
                         }
                     }
                     else {
