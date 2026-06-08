@@ -43,12 +43,43 @@ fn is_executable(path: &Path) -> bool {
             false
         }
     }
-    
+
     #[cfg(windows)]
     {
         // On Windows, if the file exists and is readable, it's generally considered executable
         // based on file extension, so we just check existence
         path.exists()
+    }
+}
+
+fn execute_external_program(cmd: &str, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    // Try to find the executable in PATH
+    if let Some(program_path) = find_executable_in_path(cmd) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            
+            let mut command = process::Command::new(&program_path);
+            command.arg0(cmd);
+            command.args(args);
+            
+            // Replace the current process with the new one (execve)
+            // If we want to wait for it, we need to spawn instead
+            let mut child = command.spawn()?;
+            child.wait()?;
+        }
+        
+        #[cfg(not(unix))]
+        {
+            let mut child = process::Command::new(&program_path)
+                .args(args)
+                .spawn()?;
+            child.wait()?;
+        }
+        
+        Ok(())
+    } else {
+        Err(format!("{}: command not found", cmd).into())
     }
 }
 
@@ -110,8 +141,16 @@ fn main() {
                         }
                     }
                     else {
-                        // Command not found
-                        println!("{}: command not found", cmd);
+                        // Try to execute as an external program
+                        let args = &parts[1..];
+                        match execute_external_program(cmd, args) {
+                            Ok(()) => {
+                                // Program executed successfully
+                            }
+                            Err(e) => {
+                                eprintln!("{}", e);
+                            }
+                        }
                     }
                 }
             }
