@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 fn is_builtin(cmd: &str) -> bool {
-    matches!(cmd, "echo" | "exit" | "type" | "pwd")
+    matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd")
 }
 
 fn find_executable_in_path(command: &str) -> Option<String> {
@@ -150,6 +150,39 @@ fn main() {
                             Err(e) => {
                                 eprintln!("pwd: {}", e);
                             }
+                        }
+                    }
+                    // Check for cd builtin
+                    else if cmd == "cd" {
+                        if parts.len() < 2 {
+                            eprintln!("cd: missing argument");
+                            continue;
+                        }
+                        
+                        let target_dir = parts[1];
+                        
+                        // Check if it's an absolute path (starts with /)
+                        if target_dir.starts_with('/') {
+                            // Verify that the directory exists
+                            let path = Path::new(target_dir);
+                            
+                            if path.exists() && path.is_dir() {
+                                // Try to change to the directory
+                                match env::set_current_dir(path) {
+                                    Ok(()) => {
+                                        // Successfully changed directory
+                                    }
+                                    Err(e) => {
+                                        eprintln!("cd: {}: {}", target_dir, e);
+                                    }
+                                }
+                            } else {
+                                // Directory doesn't exist
+                                eprintln!("cd: {}: No such file or directory", target_dir);
+                            }
+                        } else {
+                            // For now, only handle absolute paths
+                            eprintln!("cd: {}: No such file or directory", target_dir);
                         }
                     }
                     else {
