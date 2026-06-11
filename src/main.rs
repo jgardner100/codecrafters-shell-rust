@@ -107,6 +107,29 @@ fn resolve_relative_path(target_dir: &str) -> PathBuf {
     path
 }
 
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with('~') {
+        // Get the HOME environment variable
+        if let Ok(home) = env::var("HOME") {
+            if path == "~" {
+                // Just "~" means the home directory
+                home
+            } else if path.starts_with("~/") {
+                // "~/" followed by a path
+                format!("{}{}", home, &path[1..])
+            } else {
+                // "~user" or similar - not handling this for now, return as-is
+                path.to_string()
+            }
+        } else {
+            // HOME not set, return path as-is
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    }
+}
+
 fn main() {
     loop {
         // Display the prompt
@@ -185,13 +208,16 @@ fn main() {
                         
                         let target_dir = parts[1];
                         
+                        // Expand tilde if present
+                        let expanded_target = expand_tilde(target_dir);
+                        
                         // Resolve the target path
-                        let path = if target_dir.starts_with('/') {
+                        let path = if expanded_target.starts_with('/') {
                             // Absolute path
-                            PathBuf::from(target_dir)
+                            PathBuf::from(&expanded_target)
                         } else {
                             // Relative path - resolve it
-                            resolve_relative_path(target_dir)
+                            resolve_relative_path(&expanded_target)
                         };
                         
                         // Verify that the directory exists and is a directory
