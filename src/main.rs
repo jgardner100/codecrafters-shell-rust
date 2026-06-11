@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn is_builtin(cmd: &str) -> bool {
     matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd")
@@ -83,6 +83,30 @@ fn execute_external_program(cmd: &str, args: &[&str]) -> Result<(), Box<dyn std:
     }
 }
 
+fn resolve_relative_path(target_dir: &str) -> PathBuf {
+    let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let mut path = current_dir.clone();
+    
+    // Normalize the path components
+    for component in target_dir.split('/') {
+        match component {
+            "" | "." => {
+                // Empty string (from leading/trailing/double slashes) or current dir - do nothing
+            }
+            ".." => {
+                // Parent directory
+                path.pop();
+            }
+            _ => {
+                // Regular directory name
+                path.push(component);
+            }
+        }
+    }
+    
+    path
+}
+
 fn main() {
     loop {
         // Display the prompt
@@ -161,27 +185,28 @@ fn main() {
                         
                         let target_dir = parts[1];
                         
-                        // Check if it's an absolute path (starts with /)
-                        if target_dir.starts_with('/') {
-                            // Verify that the directory exists
-                            let path = Path::new(target_dir);
-                            
-                            if path.exists() && path.is_dir() {
-                                // Try to change to the directory
-                                match env::set_current_dir(path) {
-                                    Ok(()) => {
-                                        // Successfully changed directory
-                                    }
-                                    Err(e) => {
-                                        eprintln!("cd: {}: {}", target_dir, e);
-                                    }
+                        // Resolve the target path
+                        let path = if target_dir.starts_with('/') {
+                            // Absolute path
+                            PathBuf::from(target_dir)
+                        } else {
+                            // Relative path - resolve it
+                            resolve_relative_path(target_dir)
+                        };
+                        
+                        // Verify that the directory exists and is a directory
+                        if path.exists() && path.is_dir() {
+                            // Try to change to the directory
+                            match env::set_current_dir(&path) {
+                                Ok(()) => {
+                                    // Successfully changed directory
                                 }
-                            } else {
-                                // Directory doesn't exist
-                                eprintln!("cd: {}: No such file or directory", target_dir);
+                                Err(e) => {
+                                    eprintln!("cd: {}: {}", target_dir, e);
+                                }
                             }
                         } else {
-                            // For now, only handle absolute paths
+                            // Directory doesn't exist
                             eprintln!("cd: {}: No such file or directory", target_dir);
                         }
                     }
