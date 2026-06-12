@@ -52,7 +52,7 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-fn execute_external_program(cmd: &str, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+fn execute_external_program(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Try to find the executable in PATH
     if let Some(program_path) = find_executable_in_path(cmd) {
         #[cfg(unix)]
@@ -61,7 +61,10 @@ fn execute_external_program(cmd: &str, args: &[&str]) -> Result<(), Box<dyn std:
             
             let mut command = process::Command::new(&program_path);
             command.arg0(cmd);
-            command.args(args);
+            
+            for arg in args {
+                command.arg(arg);
+            }
             
             // Replace the current process with the new one (execve)
             // If we want to wait for it, we need to spawn instead
@@ -71,9 +74,11 @@ fn execute_external_program(cmd: &str, args: &[&str]) -> Result<(), Box<dyn std:
         
         #[cfg(not(unix))]
         {
-            let mut child = process::Command::new(&program_path)
-                .args(args)
-                .spawn()?;
+            let mut child = process::Command::new(&program_path);
+            for arg in args {
+                child.arg(arg);
+            }
+            child.spawn()?;
             child.wait()?;
         }
         
@@ -130,6 +135,46 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
+/// Parse a command line, respecting single quotes.
+/// Returns a vector of arguments where characters inside single quotes are treated literally.
+fn parse_command_with_quotes(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_single_quotes = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                // Toggle single quote mode
+                in_single_quotes = !in_single_quotes;
+            }
+            ' ' | '\t' => {
+                if in_single_quotes {
+                    // Preserve whitespace inside single quotes
+                    current_arg.push(ch);
+                } else {
+                    // Outside quotes, whitespace is a delimiter
+                    if !current_arg.is_empty() {
+                        args.push(current_arg.clone());
+                        current_arg.clear();
+                    }
+                }
+            }
+            _ => {
+                current_arg.push(ch);
+            }
+        }
+    }
+
+    // Don't forget the last argument
+    if !current_arg.is_empty() {
+        args.push(current_arg);
+    }
+
+    args
+}
+
 fn main() {
     loop {
         // Display the prompt
@@ -147,14 +192,14 @@ fn main() {
                 // Parse and execute the command
                 let command = input.trim();
                 if !command.is_empty() {
-                    // Split command into parts
-                    let parts: Vec<&str> = command.split_whitespace().collect();
+                    // Parse command with quote support
+                    let parts = parse_command_with_quotes(command);
                     
                     if parts.is_empty() {
                         continue;
                     }
                     
-                    let cmd = parts[0];
+                    let cmd = &parts[0];
                     
                     // Check for exit builtin
                     if cmd == "exit" {
@@ -174,7 +219,7 @@ fn main() {
                             continue;
                         }
                         
-                        let target_cmd = parts[1];
+                        let target_cmd = &parts[1];
                         
                         // First check if it's a builtin
                         if is_builtin(target_cmd) {
@@ -206,7 +251,7 @@ fn main() {
                             continue;
                         }
                         
-                        let target_dir = parts[1];
+                        let target_dir = &parts[1];
                         
                         // Expand tilde if present
                         let expanded_target = expand_tilde(target_dir);
@@ -238,8 +283,8 @@ fn main() {
                     }
                     else {
                         // Try to execute as an external program
-                        let args = &parts[1..];
-                        match execute_external_program(cmd, args) {
+                        let args = parts[1..].to_vec();
+                        match execute_external_program(cmd, &args) {
                             Ok(()) => {
                                 // Program executed successfully
                             }
