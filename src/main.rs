@@ -135,23 +135,31 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
-/// Parse a command line, respecting single quotes.
-/// Returns a vector of arguments where characters inside single quotes are treated literally.
+/// Parse a command line, respecting both single and double quotes.
+/// Returns a vector of arguments where:
+/// - Characters inside single quotes are treated literally
+/// - Characters inside double quotes are mostly literal (preserving whitespace)
+/// - Adjacent quoted/unquoted strings are concatenated
 fn parse_command_with_quotes(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current_arg = String::new();
     let mut in_single_quotes = false;
+    let mut in_double_quotes = false;
     let mut chars = input.chars().peekable();
 
     while let Some(ch) = chars.next() {
         match ch {
-            '\'' => {
-                // Toggle single quote mode
+            '\'' if !in_double_quotes => {
+                // Toggle single quote mode (only if not in double quotes)
                 in_single_quotes = !in_single_quotes;
             }
+            '"' if !in_single_quotes => {
+                // Toggle double quote mode (only if not in single quotes)
+                in_double_quotes = !in_double_quotes;
+            }
             ' ' | '\t' => {
-                if in_single_quotes {
-                    // Preserve whitespace inside single quotes
+                if in_single_quotes || in_double_quotes {
+                    // Preserve whitespace inside any quotes
                     current_arg.push(ch);
                 } else {
                     // Outside quotes, whitespace is a delimiter
