@@ -135,10 +135,12 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
-/// Parse a command line, respecting both single and double quotes.
+/// Parse a command line, respecting both single and double quotes, and backslash escaping.
 /// Returns a vector of arguments where:
 /// - Characters inside single quotes are treated literally
 /// - Characters inside double quotes are mostly literal (preserving whitespace)
+/// - Outside quotes, backslash acts as an escape character: it removes the special meaning
+///   of the next character and is itself removed
 /// - Adjacent quoted/unquoted strings are concatenated
 fn parse_command_with_quotes(input: &str) -> Vec<String> {
     let mut args = Vec::new();
@@ -156,6 +158,14 @@ fn parse_command_with_quotes(input: &str) -> Vec<String> {
             '"' if !in_single_quotes => {
                 // Toggle double quote mode (only if not in single quotes)
                 in_double_quotes = !in_double_quotes;
+            }
+            '\\' if !in_single_quotes && !in_double_quotes => {
+                // Backslash outside quotes acts as an escape character
+                // Consume the next character as a literal
+                if let Some(next_ch) = chars.next() {
+                    current_arg.push(next_ch);
+                }
+                // The backslash itself is removed (consumed)
             }
             ' ' | '\t' => {
                 if in_single_quotes || in_double_quotes {
@@ -200,7 +210,7 @@ fn main() {
                 // Parse and execute the command
                 let command = input.trim();
                 if !command.is_empty() {
-                    // Parse command with quote support
+                    // Parse command with quote support and backslash escaping
                     let parts = parse_command_with_quotes(command);
                     
                     if parts.is_empty() {
