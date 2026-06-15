@@ -137,8 +137,10 @@ fn expand_tilde(path: &str) -> String {
 
 /// Parse a command line, respecting both single and double quotes, and backslash escaping.
 /// Returns a vector of arguments where:
-/// - Characters inside single quotes are treated literally
-/// - Characters inside double quotes are mostly literal (preserving whitespace)
+/// - Characters inside single quotes are treated literally (no escaping)
+/// - Characters inside double quotes:
+///   - Backslash escapes: \", \\, \$, \`, and \<newline>
+///   - For other characters, backslash is treated literally
 /// - Outside quotes, backslash acts as an escape character: it removes the special meaning
 ///   of the next character and is itself removed
 /// - Adjacent quoted/unquoted strings are concatenated
@@ -158,6 +160,29 @@ fn parse_command_with_quotes(input: &str) -> Vec<String> {
             '"' if !in_single_quotes => {
                 // Toggle double quote mode (only if not in single quotes)
                 in_double_quotes = !in_double_quotes;
+            }
+            '\\' if in_double_quotes => {
+                // Within double quotes, backslash only escapes special characters: \", \\, \$, \`, \<newline>
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        '"' | '\\' | '$' | '`' => {
+                            // These characters are escapable with backslash - consume the backslash and add the character
+                            chars.next(); // consume the next character
+                            current_arg.push(next_ch);
+                        }
+                        '\n' => {
+                            // Backslash followed by newline: the backslash and newline are removed (line continuation)
+                            chars.next(); // consume the newline
+                        }
+                        _ => {
+                            // For all other characters, backslash is treated literally
+                            current_arg.push('\\');
+                        }
+                    }
+                } else {
+                    // Backslash at end of string (shouldn't happen in well-formed input)
+                    current_arg.push('\\');
+                }
             }
             '\\' if !in_single_quotes && !in_double_quotes => {
                 // Backslash outside quotes acts as an escape character
