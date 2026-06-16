@@ -52,7 +52,48 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-fn execute_external_program(cmd: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+/// Represents output redirection configuration
+#[derive(Debug, Clone)]
+struct Redirection {
+    filename: String,
+}
+
+/// Parse a command line to extract the command parts and any redirection
+/// Returns (command_parts, optional_redirection)
+fn parse_with_redirection(input: &str) -> (Vec<String>, Option<Redirection>) {
+    // First parse the command with quotes support to get individual tokens
+    let tokens = parse_command_with_quotes(input);
+    
+    // Now look for > or 1> redirection operators
+    let mut command_parts = Vec::new();
+    let mut redirection = None;
+    let mut i = 0;
+    
+    while i < tokens.len() {
+        let token = &tokens[i];
+        
+        if token == ">" || token == "1>" {
+            // Next token should be the filename
+            if i + 1 < tokens.len() {
+                redirection = Some(Redirection {
+                    filename: tokens[i + 1].clone(),
+                });
+                i += 2; // Skip both the operator and filename
+            } else {
+                // No filename provided after redirection operator
+                command_parts.push(token.clone());
+                i += 1;
+            }
+        } else {
+            command_parts.push(token.clone());
+            i += 1;
+        }
+    }
+    
+    (command_parts, redirection)
+}
+
+fn execute_external_program(cmd: &str, args: &[String], redirection: Option<Redirection>) -> Result<(), Box<dyn std::error::Error>> {
     // Try to find the executable in PATH
     if let Some(program_path) = find_executable_in_path(cmd) {
         #[cfg(unix)]
@@ -66,6 +107,13 @@ fn execute_external_program(cmd: &str, args: &[String]) -> Result<(), Box<dyn st
                 command.arg(arg);
             }
             
+            // Set up output redirection if needed
+            if let Some(red) = redirection {
+                let file = fs::File::create(&red.filename)?;
+                command.stdout(file);
+                // stderr is NOT redirected - it will go to the terminal
+            }
+            
             // Replace the current process with the new one (execve)
             // If we want to wait for it, we need to spawn instead
             let mut child = command.spawn()?;
@@ -74,11 +122,19 @@ fn execute_external_program(cmd: &str, args: &[String]) -> Result<(), Box<dyn st
         
         #[cfg(not(unix))]
         {
-            let mut child = process::Command::new(&program_path);
+            let mut command = process::Command::new(&program_path);
             for arg in args {
-                child.arg(arg);
+                command.arg(arg);
             }
-            child.spawn()?;
+            
+            // Set up output redirection if needed
+            if let Some(red) = redirection {
+                let file = fs::File::create(&red.filename)?;
+                command.stdout(file);
+                // stderr is NOT redirected - it will go to the terminal
+            }
+            
+            let mut child = command.spawn()?;
             child.wait()?;
         }
         
@@ -235,8 +291,8 @@ fn main() {
                 // Parse and execute the command
                 let command = input.trim();
                 if !command.is_empty() {
-                    // Parse command with quote support and backslash escaping
-                    let parts = parse_command_with_quotes(command);
+                    // Parse command with redirection support
+                    let (parts, redirection) = parse_with_redirection(command);
                     
                     if parts.is_empty() {
                         continue;
@@ -252,8 +308,21 @@ fn main() {
                     else if cmd == "echo" {
                         // Get all arguments after "echo"
                         let args = &parts[1..];
-                        // Print arguments separated by spaces with newline at end
-                        println!("{}", args.join(" "));
+                        let output = args.join(" ");
+                        
+                        // Handle output redirection
+                        if let Some(red) = redirection {
+                            match fs::File::create(&red.filename) {
+                                Ok(mut file) => {
+                                    let _ = writeln!(file, "{}", output);
+                                }
+                                Err(e) => {
+                                    eprintln!("echo: {}: {}", red.filename, e);
+                                }
+                            }
+                        } else {
+                            println!("{}", output);
+                        }
                     }
                     // Check for type builtin
                     else if cmd == "type" {
@@ -280,7 +349,21 @@ fn main() {
                         // Get the current working directory
                         match env::current_dir() {
                             Ok(path) => {
-                                println!("{}", path.display());
+                                let output = format!("{}", path.display());
+                                
+                                // Handle output redirection
+                                if let Some(red) = redirection {
+                                    match fs::File::create(&red.filename) {
+                                        Ok(mut file) => {
+                                            let _ = writeln!(file, "{}", output);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("pwd: {}: {}", red.filename, e);
+                                        }
+                                    }
+                                } else {
+                                    println!("{}", output);
+                                }
                             }
                             Err(e) => {
                                 eprintln!("pwd: {}", e);
@@ -327,7 +410,7 @@ fn main() {
                     else {
                         // Try to execute as an external program
                         let args = parts[1..].to_vec();
-                        match execute_external_program(cmd, &args) {
+                        match execute_external_program(cmd, &args, redirection) {
                             Ok(()) => {
                                 // Program executed successfully
                             }
