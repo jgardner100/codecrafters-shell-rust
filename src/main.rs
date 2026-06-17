@@ -65,7 +65,7 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
     // First parse the command with quotes support to get individual tokens
     let tokens = parse_command_with_quotes(input);
     
-    // Now look for >, >>, 1>, 1>>, and 2> redirection operators
+    // Now look for >, >>, 1>, 1>>, 2>, and 2>> redirection operators
     let mut command_parts = Vec::new();
     let mut redirection = Redirection {
         stdout_target: None,
@@ -96,10 +96,20 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
                 command_parts.push(token.clone());
                 i += 1;
             }
-        } else if token == "2>" {
-            // Next token should be the filename for stderr
+        } else if token == "2>>" {
+            // Append to stderr
             if i + 1 < tokens.len() {
-                redirection.stderr_target = Some((tokens[i + 1].clone(), false)); // stderr redirect doesn't append yet
+                redirection.stderr_target = Some((tokens[i + 1].clone(), true)); // true = append
+                i += 2; // Skip both the operator and filename
+            } else {
+                // No filename provided after redirection operator
+                command_parts.push(token.clone());
+                i += 1;
+            }
+        } else if token == "2>" {
+            // Overwrite stderr
+            if i + 1 < tokens.len() {
+                redirection.stderr_target = Some((tokens[i + 1].clone(), false)); // false = overwrite
                 i += 2; // Skip both the operator and filename
             } else {
                 // No filename provided after redirection operator
