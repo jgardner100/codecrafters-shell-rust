@@ -55,8 +55,8 @@ fn is_executable(path: &Path) -> bool {
 /// Represents output redirection configuration
 #[derive(Debug, Clone)]
 struct Redirection {
-    stdout_file: Option<String>,
-    stderr_file: Option<String>,
+    stdout_target: Option<(String, bool)>, // (filename, is_append)
+    stderr_target: Option<(String, bool)>, // (filename, is_append)
 }
 
 /// Parse a command line to extract the command parts and any redirection
@@ -65,21 +65,31 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
     // First parse the command with quotes support to get individual tokens
     let tokens = parse_command_with_quotes(input);
     
-    // Now look for >, 1>, and 2> redirection operators
+    // Now look for >, >>, 1>, 1>>, and 2> redirection operators
     let mut command_parts = Vec::new();
     let mut redirection = Redirection {
-        stdout_file: None,
-        stderr_file: None,
+        stdout_target: None,
+        stderr_target: None,
     };
     let mut i = 0;
     
     while i < tokens.len() {
         let token = &tokens[i];
         
-        if token == ">" || token == "1>" {
-            // Next token should be the filename for stdout
+        if token == ">>" || token == "1>>" {
+            // Append to stdout
             if i + 1 < tokens.len() {
-                redirection.stdout_file = Some(tokens[i + 1].clone());
+                redirection.stdout_target = Some((tokens[i + 1].clone(), true)); // true = append
+                i += 2; // Skip both the operator and filename
+            } else {
+                // No filename provided after redirection operator
+                command_parts.push(token.clone());
+                i += 1;
+            }
+        } else if token == ">" || token == "1>" {
+            // Overwrite stdout
+            if i + 1 < tokens.len() {
+                redirection.stdout_target = Some((tokens[i + 1].clone(), false)); // false = overwrite
                 i += 2; // Skip both the operator and filename
             } else {
                 // No filename provided after redirection operator
@@ -89,7 +99,7 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
         } else if token == "2>" {
             // Next token should be the filename for stderr
             if i + 1 < tokens.len() {
-                redirection.stderr_file = Some(tokens[i + 1].clone());
+                redirection.stderr_target = Some((tokens[i + 1].clone(), false)); // stderr redirect doesn't append yet
                 i += 2; // Skip both the operator and filename
             } else {
                 // No filename provided after redirection operator
@@ -120,14 +130,32 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection
             }
             
             // Set up stdout redirection if needed
-            if let Some(filename) = &redirection.stdout_file {
-                let file = fs::File::create(filename)?;
+            if let Some((filename, is_append)) = &redirection.stdout_target {
+                let file = if *is_append {
+                    // Open file in append mode
+                    fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(filename)?
+                } else {
+                    // Create/truncate file
+                    fs::File::create(filename)?
+                };
                 command.stdout(file);
             }
             
             // Set up stderr redirection if needed
-            if let Some(filename) = &redirection.stderr_file {
-                let file = fs::File::create(filename)?;
+            if let Some((filename, is_append)) = &redirection.stderr_target {
+                let file = if *is_append {
+                    // Open file in append mode
+                    fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(filename)?
+                } else {
+                    // Create/truncate file
+                    fs::File::create(filename)?
+                };
                 command.stderr(file);
             }
             
@@ -145,14 +173,32 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection
             }
             
             // Set up stdout redirection if needed
-            if let Some(filename) = &redirection.stdout_file {
-                let file = fs::File::create(filename)?;
+            if let Some((filename, is_append)) = &redirection.stdout_target {
+                let file = if *is_append {
+                    // Open file in append mode
+                    fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(filename)?
+                } else {
+                    // Create/truncate file
+                    fs::File::create(filename)?
+                };
                 command.stdout(file);
             }
             
             // Set up stderr redirection if needed
-            if let Some(filename) = &redirection.stderr_file {
-                let file = fs::File::create(filename)?;
+            if let Some((filename, is_append)) = &redirection.stderr_target {
+                let file = if *is_append {
+                    // Open file in append mode
+                    fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(filename)?
+                } else {
+                    // Create/truncate file
+                    fs::File::create(filename)?
+                };
                 command.stderr(file);
             }
             
@@ -333,13 +379,31 @@ fn main() {
                         let output = args.join(" ");
                         
                         // Create stderr file if redirected (even if empty, to match shell behavior)
-                        if let Some(stderr_filename) = &redirection.stderr_file {
-                            let _ = fs::File::create(stderr_filename);
+                        if let Some((stderr_filename, is_append)) = &redirection.stderr_target {
+                            let _ = if *is_append {
+                                fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(stderr_filename)
+                            } else {
+                                fs::File::create(stderr_filename)
+                            };
                         }
                         
                         // Handle output redirection
-                        if let Some(filename) = &redirection.stdout_file {
-                            match fs::File::create(filename) {
+                        if let Some((filename, is_append)) = &redirection.stdout_target {
+                            let result = if *is_append {
+                                // Append mode
+                                fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(filename)
+                            } else {
+                                // Overwrite mode
+                                fs::File::create(filename)
+                            };
+                            
+                            match result {
                                 Ok(mut file) => {
                                     let _ = writeln!(file, "{}", output);
                                 }
@@ -379,13 +443,31 @@ fn main() {
                                 let output = format!("{}", path.display());
                                 
                                 // Create stderr file if redirected (even if empty)
-                                if let Some(stderr_filename) = &redirection.stderr_file {
-                                    let _ = fs::File::create(stderr_filename);
+                                if let Some((stderr_filename, is_append)) = &redirection.stderr_target {
+                                    let _ = if *is_append {
+                                        fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(stderr_filename)
+                                    } else {
+                                        fs::File::create(stderr_filename)
+                                    };
                                 }
                                 
                                 // Handle output redirection
-                                if let Some(filename) = &redirection.stdout_file {
-                                    match fs::File::create(filename) {
+                                if let Some((filename, is_append)) = &redirection.stdout_target {
+                                    let result = if *is_append {
+                                        // Append mode
+                                        fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(filename)
+                                    } else {
+                                        // Overwrite mode
+                                        fs::File::create(filename)
+                                    };
+                                    
+                                    match result {
                                         Ok(mut file) => {
                                             let _ = writeln!(file, "{}", output);
                                         }
