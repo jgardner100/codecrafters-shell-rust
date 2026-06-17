@@ -332,6 +332,11 @@ fn main() {
                         let args = &parts[1..];
                         let output = args.join(" ");
                         
+                        // Create stderr file if redirected (even if empty, to match shell behavior)
+                        if let Some(stderr_filename) = &redirection.stderr_file {
+                            let _ = fs::File::create(stderr_filename);
+                        }
+                        
                         // Handle output redirection
                         if let Some(filename) = &redirection.stdout_file {
                             match fs::File::create(filename) {
@@ -372,6 +377,11 @@ fn main() {
                         match env::current_dir() {
                             Ok(path) => {
                                 let output = format!("{}", path.display());
+                                
+                                // Create stderr file if redirected (even if empty)
+                                if let Some(stderr_filename) = &redirection.stderr_file {
+                                    let _ = fs::File::create(stderr_filename);
+                                }
                                 
                                 // Handle output redirection
                                 if let Some(filename) = &redirection.stdout_file {
