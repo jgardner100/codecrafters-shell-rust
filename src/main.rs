@@ -55,29 +55,41 @@ fn is_executable(path: &Path) -> bool {
 /// Represents output redirection configuration
 #[derive(Debug, Clone)]
 struct Redirection {
-    filename: String,
+    stdout_file: Option<String>,
+    stderr_file: Option<String>,
 }
 
 /// Parse a command line to extract the command parts and any redirection
-/// Returns (command_parts, optional_redirection)
-fn parse_with_redirection(input: &str) -> (Vec<String>, Option<Redirection>) {
+/// Returns (command_parts, redirection)
+fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
     // First parse the command with quotes support to get individual tokens
     let tokens = parse_command_with_quotes(input);
     
-    // Now look for > or 1> redirection operators
+    // Now look for >, 1>, and 2> redirection operators
     let mut command_parts = Vec::new();
-    let mut redirection = None;
+    let mut redirection = Redirection {
+        stdout_file: None,
+        stderr_file: None,
+    };
     let mut i = 0;
     
     while i < tokens.len() {
         let token = &tokens[i];
         
         if token == ">" || token == "1>" {
-            // Next token should be the filename
+            // Next token should be the filename for stdout
             if i + 1 < tokens.len() {
-                redirection = Some(Redirection {
-                    filename: tokens[i + 1].clone(),
-                });
+                redirection.stdout_file = Some(tokens[i + 1].clone());
+                i += 2; // Skip both the operator and filename
+            } else {
+                // No filename provided after redirection operator
+                command_parts.push(token.clone());
+                i += 1;
+            }
+        } else if token == "2>" {
+            // Next token should be the filename for stderr
+            if i + 1 < tokens.len() {
+                redirection.stderr_file = Some(tokens[i + 1].clone());
                 i += 2; // Skip both the operator and filename
             } else {
                 // No filename provided after redirection operator
@@ -93,7 +105,7 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Option<Redirection>) {
     (command_parts, redirection)
 }
 
-fn execute_external_program(cmd: &str, args: &[String], redirection: Option<Redirection>) -> Result<(), Box<dyn std::error::Error>> {
+fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection) -> Result<(), Box<dyn std::error::Error>> {
     // Try to find the executable in PATH
     if let Some(program_path) = find_executable_in_path(cmd) {
         #[cfg(unix)]
@@ -107,11 +119,16 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Option<Redi
                 command.arg(arg);
             }
             
-            // Set up output redirection if needed
-            if let Some(red) = redirection {
-                let file = fs::File::create(&red.filename)?;
+            // Set up stdout redirection if needed
+            if let Some(filename) = &redirection.stdout_file {
+                let file = fs::File::create(filename)?;
                 command.stdout(file);
-                // stderr is NOT redirected - it will go to the terminal
+            }
+            
+            // Set up stderr redirection if needed
+            if let Some(filename) = &redirection.stderr_file {
+                let file = fs::File::create(filename)?;
+                command.stderr(file);
             }
             
             // Replace the current process with the new one (execve)
@@ -127,11 +144,16 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Option<Redi
                 command.arg(arg);
             }
             
-            // Set up output redirection if needed
-            if let Some(red) = redirection {
-                let file = fs::File::create(&red.filename)?;
+            // Set up stdout redirection if needed
+            if let Some(filename) = &redirection.stdout_file {
+                let file = fs::File::create(filename)?;
                 command.stdout(file);
-                // stderr is NOT redirected - it will go to the terminal
+            }
+            
+            // Set up stderr redirection if needed
+            if let Some(filename) = &redirection.stderr_file {
+                let file = fs::File::create(filename)?;
+                command.stderr(file);
             }
             
             let mut child = command.spawn()?;
@@ -311,13 +333,13 @@ fn main() {
                         let output = args.join(" ");
                         
                         // Handle output redirection
-                        if let Some(red) = redirection {
-                            match fs::File::create(&red.filename) {
+                        if let Some(filename) = &redirection.stdout_file {
+                            match fs::File::create(filename) {
                                 Ok(mut file) => {
                                     let _ = writeln!(file, "{}", output);
                                 }
                                 Err(e) => {
-                                    eprintln!("echo: {}: {}", red.filename, e);
+                                    eprintln!("echo: {}: {}", filename, e);
                                 }
                             }
                         } else {
@@ -352,13 +374,13 @@ fn main() {
                                 let output = format!("{}", path.display());
                                 
                                 // Handle output redirection
-                                if let Some(red) = redirection {
-                                    match fs::File::create(&red.filename) {
+                                if let Some(filename) = &redirection.stdout_file {
+                                    match fs::File::create(filename) {
                                         Ok(mut file) => {
                                             let _ = writeln!(file, "{}", output);
                                         }
                                         Err(e) => {
-                                            eprintln!("pwd: {}: {}", red.filename, e);
+                                            eprintln!("pwd: {}: {}", filename, e);
                                         }
                                     }
                                 } else {
