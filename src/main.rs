@@ -3,6 +3,7 @@ use std::process;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 // --- Rustyline Imports ---
 use rustyline::completion::{Completer, Pair};
@@ -28,23 +29,75 @@ impl Completer for ShellHelper {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let builtins = vec!["echo ", "exit "];
+        let builtins = vec!["echo", "exit", "type", "pwd", "cd"];
         let mut candidates = Vec::new();
         let slice = &line[..pos];
         
+        // Only complete if we're on the first word (no space before cursor)
         if !slice.contains(' ') {
+            // First, add matching builtins
             for builtin in &builtins {
                 if builtin.starts_with(slice) {
                     candidates.push(Pair {
-                        display: builtin.trim_end().to_string(),
-                        replacement: builtin.to_string(),
+                        display: builtin.to_string(),
+                        replacement: format!("{} ", builtin),
                     });
                 }
+            }
+            
+            // Then, add matching executables from PATH
+            let path_executables = find_executables_in_path_matching(slice);
+            for executable in path_executables {
+                candidates.push(Pair {
+                    display: executable.clone(),
+                    replacement: format!("{} ", executable),
+                });
             }
         }
         
         Ok((0, candidates))
     }
+}
+
+fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
+    let mut executables = HashSet::new();
+    
+    if let Ok(path_var) = env::var("PATH") {
+        let path_delimiter = if cfg!(windows) { ";" } else { ":" };
+        
+        for dir in path_var.split(path_delimiter) {
+            // Skip empty directory entries
+            if dir.is_empty() {
+                continue;
+            }
+            
+            let path = Path::new(dir);
+            
+            // Handle gracefully if directory doesn't exist
+            if !path.is_dir() {
+                continue;
+            }
+            
+            // Try to read the directory
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if let Ok(file_name) = entry.file_name().into_string() {
+                        if file_name.starts_with(prefix) {
+                            if let Ok(metadata) = entry.metadata() {
+                                if metadata.is_file() && is_executable(&entry.path()) {
+                                    executables.insert(file_name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    let mut result: Vec<String> = executables.into_iter().collect();
+    result.sort();
+    result
 }
 
 fn is_builtin(cmd: &str) -> bool {
