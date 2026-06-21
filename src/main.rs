@@ -1,63 +1,10 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::process;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
-
-// --- Rustyline Imports ---
-use rustyline::completion::{Completer, Pair};
-use rustyline::error::ReadlineError;
-use rustyline::hint::Hinter;
-use rustyline::highlight::Highlighter;
-use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper};
-
-// Define our helper struct
-struct ShellHelper;
-
-// Manually implement the traits instead of deriving them
-impl Helper for ShellHelper {}
-impl Hinter for ShellHelper {
-    type Hint = String;
-}
-impl Highlighter for ShellHelper {}
-impl Validator for ShellHelper {}
-
-// Keep your existing Completer implementation
-impl Completer for ShellHelper {
-    type Candidate = Pair;
-
-    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let builtins = vec!["echo", "exit", "type", "pwd", "cd"];
-        let mut candidates = Vec::new();
-        let slice = &line[..pos];
-        
-        // Only complete if we're on the first word (no space before cursor)
-        if !slice.contains(' ') {
-            // First, add matching builtins
-            for builtin in &builtins {
-                if builtin.starts_with(slice) {
-                    candidates.push(Pair {
-                        display: builtin.to_string(),
-                        replacement: format!("{} ", builtin),
-                    });
-                }
-            }
-            
-            // Then, add matching executables from PATH
-            let path_executables = find_executables_in_path_matching(slice);
-            for executable in path_executables {
-                candidates.push(Pair {
-                    display: executable.clone(),
-                    replacement: format!("{} ", executable),
-                });
-            }
-        }
-        
-        Ok((0, candidates))
-    }
-}
+use std::sync::Mutex;
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     let mut executables = HashSet::new();
@@ -66,19 +13,16 @@ fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
         let path_delimiter = if cfg!(windows) { ";" } else { ":" };
         
         for dir in path_var.split(path_delimiter) {
-            // Skip empty directory entries
             if dir.is_empty() {
                 continue;
             }
             
             let path = Path::new(dir);
             
-            // Handle gracefully if directory doesn't exist
             if !path.is_dir() {
                 continue;
             }
             
-            // Try to read the directory
             if let Ok(entries) = fs::read_dir(path) {
                 for entry in entries.flatten() {
                     if let Ok(file_name) = entry.file_name().into_string() {
@@ -293,12 +237,118 @@ fn parse_command_with_quotes(input: &str) -> Vec<String> {
 }
 
 fn main() {
-    // Initialize rustyline with our custom ShellHelper
-    let mut rl = Editor::<ShellHelper, _>::new().unwrap();
-    rl.set_helper(Some(ShellHelper));
+    use rustyline::Editor;
+    use rustyline::error::ReadlineError;
+    use rustyline::config::Builder;
+    use rustyline::completion::{Completer, Pair};
+    use rustyline::hint::Hinter;
+    use rustyline::highlight::Highlighter;
+    use rustyline::validate::Validator;
+    use rustyline::{Context, Helper};
+
+    struct ShellHelper {
+        tab_state: Mutex<Option<(String, usize)>>,
+    }
+
+    impl Helper for ShellHelper {}
+    impl Hinter for ShellHelper {
+        type Hint = String;
+    }
+    impl Highlighter for ShellHelper {}
+    impl Validator for ShellHelper {}
+
+    impl Completer for ShellHelper {
+        type Candidate = Pair;
+
+        fn complete(
+            &self,
+            line: &str,
+            pos: usize,
+            _ctx: &Context<'_>,
+        ) -> rustyline::Result<(usize, Vec<Pair>)> {
+            let slice = &line[..pos];
+
+            // Only complete if we're on the first word (no space before cursor)
+            if !slice.contains(' ') && !slice.is_empty() {
+                // 1. Gather all matching executables from PATH
+                let mut matches = find_executables_in_path_matching(slice);
+
+                // 2. Add matching builtins
+                let builtins = ["echo", "exit", "type", "pwd", "cd"];
+                for builtin in builtins {
+                    if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
+                        matches.push(builtin.to_string());
+                    }
+                }
+
+                // Sort the total combined list alphabetically
+                matches.sort();
+
+                // If there are no matches at all, ring the bell and return empty
+                if matches.is_empty() {
+                    print!("\x07");
+                    io::stdout().flush().ok();
+                    return Ok((0, vec![]));
+                }
+
+                // For single matches, complete automatically with a trailing space
+                if matches.len() == 1 {
+                    let candidate = Pair {
+                        display: matches[0].clone(),
+                        replacement: format!("{} ", matches[0]),
+                    };
+                    return Ok((0, vec![candidate]));
+                }
+
+                // Track the tab execution state for multiple matches
+                let mut state = self.tab_state.lock().unwrap();
+                let (last_prefix, count) = state.take().unwrap_or((String::new(), 0));
+
+                if last_prefix == slice {
+                    let new_count = count + 1;
+                    if new_count >= 2 {
+                        // On the second tab press: print matches on a new line separated by spaces
+                        println!();
+                        println!("{}", matches.join("  "));
+                        
+                        *state = None; // Reset the cycle
+                        
+                        // Pass a dummy candidate that matches exactly what the user typed.
+                        let candidate = Pair {
+                            display: slice.to_string(),
+                            replacement: slice.to_string(),
+                        };
+                        return Ok((0, vec![candidate]));
+                    } else {
+                        print!("\x07");
+                        io::stdout().flush().ok();
+                        *state = Some((slice.to_string(), new_count));
+                        return Ok((0, vec![]));
+                    }
+                } else {
+                    // First tab press for multiple matches: ring bell
+                    print!("\x07");
+                    io::stdout().flush().ok();
+                    *state = Some((slice.to_string(), 1));
+                    return Ok((0, vec![]));
+                }
+            }
+
+            Ok((0, vec![]))
+        }
+    }
+
+    let config = Builder::new()
+        .auto_add_history(true)
+        .bell_style(rustyline::config::BellStyle::Visible)
+        .build();
+
+    let mut rl = Editor::<ShellHelper, _>::with_config(config).unwrap();
+    rl.set_helper(Some(ShellHelper {
+        tab_state: Mutex::new(None),
+    }));
 
     loop {
-        // Read user input via rustyline (handles prompt and tab-completion automatically)
         let readline = rl.readline("$ ");
         match readline {
             Ok(line) => {
@@ -306,36 +356,48 @@ fn main() {
                 if command.is_empty() {
                     continue;
                 }
-                
+
                 let (parts, redirection) = parse_with_redirection(command);
                 if parts.is_empty() {
                     continue;
                 }
-                
+
                 let cmd = &parts[0];
-                
+
                 if cmd == "exit" {
                     process::exit(0);
-                }
-                else if cmd == "echo" {
+                } else if cmd == "echo" {
                     let args = &parts[1..];
                     let output = args.join(" ");
-                    
+
                     if let Some((stderr_filename, is_append)) = &redirection.stderr_target {
-                        let _ = fs::OpenOptions::new().create(true).append(*is_append).write(!is_append).truncate(!is_append).open(stderr_filename);
+                        let _ = fs::OpenOptions::new()
+                            .create(true)
+                            .append(*is_append)
+                            .write(!is_append)
+                            .truncate(!is_append)
+                            .open(stderr_filename);
                     }
-                    
+
                     if let Some((filename, is_append)) = &redirection.stdout_target {
-                        let result = fs::OpenOptions::new().create(true).append(*is_append).write(!is_append).truncate(!is_append).open(filename);
+                        let result = fs::OpenOptions::new()
+                            .create(true)
+                            .append(*is_append)
+                            .write(!is_append)
+                            .truncate(!is_append)
+                            .open(filename);
                         match result {
-                            Ok(mut file) => { let _ = writeln!(file, "{}", output); }
-                            Err(e) => { eprintln!("echo: {}: {}", filename, e); }
+                            Ok(mut file) => {
+                                let _ = writeln!(file, "{}", output);
+                            }
+                            Err(e) => {
+                                eprintln!("echo: {}: {}", filename, e);
+                            }
                         }
                     } else {
                         println!("{}", output);
                     }
-                }
-                else if cmd == "type" {
+                } else if cmd == "type" {
                     if parts.len() < 2 {
                         println!("type: missing argument");
                         continue;
@@ -348,28 +410,42 @@ fn main() {
                     } else {
                         println!("{}: not found", target_cmd);
                     }
-                }
-                else if cmd == "pwd" {
+                } else if cmd == "pwd" {
                     match env::current_dir() {
                         Ok(path) => {
                             let output = format!("{}", path.display());
                             if let Some((stderr_filename, is_append)) = &redirection.stderr_target {
-                                let _ = fs::OpenOptions::new().create(true).append(*is_append).write(!is_append).truncate(!is_append).open(stderr_filename);
+                                let _ = fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(*is_append)
+                                    .write(!is_append)
+                                    .truncate(!is_append)
+                                    .open(stderr_filename);
                             }
                             if let Some((filename, is_append)) = &redirection.stdout_target {
-                                let result = fs::OpenOptions::new().create(true).append(*is_append).write(!is_append).truncate(!is_append).open(filename);
+                                let result = fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(*is_append)
+                                    .write(!is_append)
+                                    .truncate(!is_append)
+                                    .open(filename);
                                 match result {
-                                    Ok(mut file) => { let _ = writeln!(file, "{}", output); }
-                                    Err(e) => { eprintln!("pwd: {}: {}", filename, e); }
+                                    Ok(mut file) => {
+                                        let _ = writeln!(file, "{}", output);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("pwd: {}: {}", filename, e);
+                                    }
                                 }
                             } else {
                                 println!("{}", output);
                             }
                         }
-                        Err(e) => { eprintln!("pwd: {}", e); }
+                        Err(e) => {
+                            eprintln!("pwd: {}", e);
+                        }
                     }
-                }
-                else if cmd == "cd" {
+                } else if cmd == "cd" {
                     if parts.len() < 2 {
                         eprintln!("cd: missing argument");
                         continue;
@@ -381,7 +457,7 @@ fn main() {
                     } else {
                         resolve_relative_path(&expanded_target)
                     };
-                    
+
                     if path.exists() && path.is_dir() {
                         if let Err(e) = env::set_current_dir(&path) {
                             eprintln!("cd: {}: {}", target_dir, e);
@@ -389,8 +465,7 @@ fn main() {
                     } else {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
-                }
-                else {
+                } else {
                     let args = parts[1..].to_vec();
                     if let Err(e) = execute_external_program(cmd, &args, redirection) {
                         eprintln!("{}", e);
@@ -398,11 +473,9 @@ fn main() {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D
                 break;
             }
             Err(err) => {
