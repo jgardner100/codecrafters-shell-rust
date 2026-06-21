@@ -78,6 +78,31 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Calculate the longest common prefix (LCP) of all strings in the list
+fn longest_common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    
+    if strings.len() == 1 {
+        return strings[0].clone();
+    }
+    
+    let mut lcp = String::new();
+    let min_len = strings.iter().map(|s| s.len()).min().unwrap_or(0);
+    
+    for i in 0..min_len {
+        let ch = strings[0].chars().nth(i).unwrap();
+        if strings.iter().all(|s| s.chars().nth(i) == Some(ch)) {
+            lcp.push(ch);
+        } else {
+            break;
+        }
+    }
+    
+    lcp
+}
+
 #[derive(Debug, Clone)]
 struct Redirection {
     stdout_target: Option<(String, bool)>,
@@ -247,7 +272,7 @@ fn main() {
     use rustyline::{Context, Helper};
 
     struct ShellHelper {
-        tab_state: Mutex<Option<(String, usize)>>,
+        tab_state: Mutex<Option<(String, usize, Vec<String>)>>,
     }
 
     impl Helper for ShellHelper {}
@@ -300,11 +325,15 @@ fn main() {
                     return Ok((0, vec![candidate]));
                 }
 
+                // For multiple matches: use longest common prefix (LCP) logic
+                let lcp = longest_common_prefix(&matches);
+
                 // Track the tab execution state for multiple matches
                 let mut state = self.tab_state.lock().unwrap();
-                let (last_prefix, count) = state.take().unwrap_or((String::new(), 0));
+                let (last_prefix, count, last_matches) = state.take().unwrap_or((String::new(), 0, vec![]));
 
-                if last_prefix == slice {
+                if last_prefix == slice && last_matches == matches {
+                    // User pressed tab again on the same input
                     let new_count = count + 1;
                     if new_count >= 2 {
                         // On the second tab press: print matches on a new line separated by spaces
@@ -322,15 +351,26 @@ fn main() {
                     } else {
                         print!("\x07");
                         io::stdout().flush().ok();
-                        *state = Some((slice.to_string(), new_count));
+                        *state = Some((slice.to_string(), new_count, matches.clone()));
                         return Ok((0, vec![]));
                     }
                 } else {
-                    // First tab press for multiple matches: ring bell
-                    print!("\x07");
-                    io::stdout().flush().ok();
-                    *state = Some((slice.to_string(), 1));
-                    return Ok((0, vec![]));
+                    // First tab press or new input: complete to LCP
+                    *state = Some((slice.to_string(), 1, matches.clone()));
+                    
+                    // If LCP is longer than the current input, complete to it
+                    if lcp.len() > slice.len() {
+                        let candidate = Pair {
+                            display: lcp.clone(),
+                            replacement: lcp,
+                        };
+                        return Ok((0, vec![candidate]));
+                    } else {
+                        // LCP is same as current input, ring bell
+                        print!("\x07");
+                        io::stdout().flush().ok();
+                        return Ok((0, vec![]));
+                    }
                 }
             }
 
