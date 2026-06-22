@@ -44,6 +44,23 @@ fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     result
 }
 
+fn find_files_in_current_dir_matching(prefix: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    
+    if let Ok(entries) = fs::read_dir(".") {
+        for entry in entries.flatten() {
+            if let Ok(file_name) = entry.file_name().into_string() {
+                if file_name.starts_with(prefix) {
+                    files.push(file_name);
+                }
+            }
+        }
+    }
+    
+    files.sort();
+    files
+}
+
 fn is_builtin(cmd: &str) -> bool {
     matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd")
 }
@@ -293,46 +310,39 @@ fn main() {
         ) -> rustyline::Result<(usize, Vec<Pair>)> {
             let slice = &line[..pos];
 
-            // Only complete if we're on the first word (no space before cursor)
-            if !slice.contains(' ') && !slice.is_empty() {
-                // 1. Gather all matching executables from PATH
-                let mut matches = find_executables_in_path_matching(slice);
-
-                // 2. Add matching builtins
-                let builtins = ["echo", "exit", "type", "pwd", "cd"];
-                for builtin in builtins {
-                    if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
-                        matches.push(builtin.to_string());
-                    }
-                }
-
-                // Sort the total combined list alphabetically
-                matches.sort();
-
-                // If there are no matches at all, ring the bell and return empty
+            // Check if there's a space in the line (indicating we're completing an argument)
+            if let Some(last_space_pos) = slice.rfind(' ') {
+                // We're completing an argument (not the command)
+                // Extract the partial filename/argument after the last space
+                let partial = &slice[last_space_pos + 1..];
+                
+                // Find matching files in the current directory
+                let matches = find_files_in_current_dir_matching(partial);
+                
                 if matches.is_empty() {
+                    // No matches found, ring the bell
                     print!("\x07");
                     io::stdout().flush().ok();
-                    return Ok((0, vec![]));
+                    return Ok((pos, vec![]));
                 }
-
-                // For single matches, complete automatically with a trailing space
+                
+                // For single match, complete with trailing space
                 if matches.len() == 1 {
                     let candidate = Pair {
                         display: matches[0].clone(),
                         replacement: format!("{} ", matches[0]),
                     };
-                    return Ok((0, vec![candidate]));
+                    return Ok((pos - partial.len(), vec![candidate]));
                 }
-
-                // For multiple matches: use longest common prefix (LCP) logic
+                
+                // For multiple matches, use longest common prefix logic
                 let lcp = longest_common_prefix(&matches);
-
+                
                 // Track the tab execution state for multiple matches
                 let mut state = self.tab_state.lock().unwrap();
                 let (last_prefix, count, last_matches) = state.take().unwrap_or((String::new(), 0, vec![]));
-
-                if last_prefix == slice && last_matches == matches {
+                
+                if last_prefix == partial && last_matches == matches {
                     // User pressed tab again on the same input
                     let new_count = count + 1;
                     if new_count >= 2 {
@@ -342,34 +352,115 @@ fn main() {
                         
                         *state = None; // Reset the cycle
                         
-                        // Pass a dummy candidate that matches exactly what the user typed.
+                        // Pass a dummy candidate that matches exactly what the user typed
                         let candidate = Pair {
-                            display: slice.to_string(),
-                            replacement: slice.to_string(),
+                            display: partial.to_string(),
+                            replacement: partial.to_string(),
                         };
-                        return Ok((0, vec![candidate]));
+                        return Ok((pos - partial.len(), vec![candidate]));
                     } else {
                         print!("\x07");
                         io::stdout().flush().ok();
-                        *state = Some((slice.to_string(), new_count, matches.clone()));
-                        return Ok((0, vec![]));
+                        *state = Some((partial.to_string(), new_count, matches.clone()));
+                        return Ok((pos, vec![]));
                     }
                 } else {
                     // First tab press or new input: complete to LCP
-                    *state = Some((slice.to_string(), 1, matches.clone()));
+                    *state = Some((partial.to_string(), 1, matches.clone()));
                     
-                    // If LCP is longer than the current input, complete to it
-                    if lcp.len() > slice.len() {
+                    // If LCP is longer than the current partial input, complete to it
+                    if lcp.len() > partial.len() {
                         let candidate = Pair {
                             display: lcp.clone(),
                             replacement: lcp,
                         };
-                        return Ok((0, vec![candidate]));
+                        return Ok((pos - partial.len(), vec![candidate]));
                     } else {
                         // LCP is same as current input, ring bell
                         print!("\x07");
                         io::stdout().flush().ok();
-                        return Ok((0, vec![]));
+                        return Ok((pos, vec![]));
+                    }
+                }
+            } else {
+                // We're completing the command itself (no space in the line)
+                if !slice.is_empty() {
+                    // 1. Gather all matching executables from PATH
+                    let mut matches = find_executables_in_path_matching(slice);
+
+                    // 2. Add matching builtins
+                    let builtins = ["echo", "exit", "type", "pwd", "cd"];
+                    for builtin in builtins {
+                        if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
+                            matches.push(builtin.to_string());
+                        }
+                    }
+
+                    // Sort the total combined list alphabetically
+                    matches.sort();
+
+                    // If there are no matches at all, ring the bell and return empty
+                    if matches.is_empty() {
+                        print!("\x07");
+                        io::stdout().flush().ok();
+                        return Ok((pos, vec![]));
+                    }
+
+                    // For single matches, complete automatically with a trailing space
+                    if matches.len() == 1 {
+                        let candidate = Pair {
+                            display: matches[0].clone(),
+                            replacement: format!("{} ", matches[0]),
+                        };
+                        return Ok((0, vec![candidate]));
+                    }
+
+                    // For multiple matches: use longest common prefix (LCP) logic
+                    let lcp = longest_common_prefix(&matches);
+
+                    // Track the tab execution state for multiple matches
+                    let mut state = self.tab_state.lock().unwrap();
+                    let (last_prefix, count, last_matches) = state.take().unwrap_or((String::new(), 0, vec![]));
+
+                    if last_prefix == slice && last_matches == matches {
+                        // User pressed tab again on the same input
+                        let new_count = count + 1;
+                        if new_count >= 2 {
+                            // On the second tab press: print matches on a new line separated by spaces
+                            println!();
+                            println!("{}", matches.join("  "));
+                            
+                            *state = None; // Reset the cycle
+                            
+                            // Pass a dummy candidate that matches exactly what the user typed.
+                            let candidate = Pair {
+                                display: slice.to_string(),
+                                replacement: slice.to_string(),
+                            };
+                            return Ok((0, vec![candidate]));
+                        } else {
+                            print!("\x07");
+                            io::stdout().flush().ok();
+                            *state = Some((slice.to_string(), new_count, matches.clone()));
+                            return Ok((pos, vec![]));
+                        }
+                    } else {
+                        // First tab press or new input: complete to LCP
+                        *state = Some((slice.to_string(), 1, matches.clone()));
+                        
+                        // If LCP is longer than the current input, complete to it
+                        if lcp.len() > slice.len() {
+                            let candidate = Pair {
+                                display: lcp.clone(),
+                                replacement: lcp,
+                            };
+                            return Ok((0, vec![candidate]));
+                        } else {
+                            // LCP is same as current input, ring bell
+                            print!("\x07");
+                            io::stdout().flush().ok();
+                            return Ok((pos, vec![]));
+                        }
                     }
                 }
             }
