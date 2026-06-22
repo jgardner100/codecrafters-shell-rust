@@ -61,6 +61,28 @@ fn find_files_in_current_dir_matching(prefix: &str) -> Vec<String> {
     files
 }
 
+fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    
+    let path = Path::new(dir_path);
+    if !path.is_dir() {
+        return files;
+    }
+    
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(file_name) = entry.file_name().into_string() {
+                if file_name.starts_with(prefix) {
+                    files.push(file_name);
+                }
+            }
+        }
+    }
+    
+    files.sort();
+    files
+}
+
 fn is_builtin(cmd: &str) -> bool {
     matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd")
 }
@@ -316,8 +338,18 @@ fn main() {
                 // Extract the partial filename/argument after the last space
                 let partial = &slice[last_space_pos + 1..];
                 
-                // Find matching files in the current directory
-                let matches = find_files_in_current_dir_matching(partial);
+                // Check if partial contains a '/' (nested path)
+                let matches = if let Some(last_slash_pos) = partial.rfind('/') {
+                    // Split at the last '/'
+                    let dir_path = &partial[..=last_slash_pos];
+                    let prefix = &partial[last_slash_pos + 1..];
+                    
+                    // Find matching files in the specified directory
+                    find_files_in_path_matching(dir_path, prefix)
+                } else {
+                    // Find matching files in the current directory
+                    find_files_in_current_dir_matching(partial)
+                };
                 
                 if matches.is_empty() {
                     // No matches found, ring the bell
@@ -328,9 +360,20 @@ fn main() {
                 
                 // For single match, complete with trailing space
                 if matches.len() == 1 {
+                    let completion = if partial.contains('/') {
+                        // For nested paths, reconstruct the full path
+                        if let Some(last_slash_pos) = partial.rfind('/') {
+                            format!("{}{} ", &partial[..=last_slash_pos], matches[0])
+                        } else {
+                            format!("{} ", matches[0])
+                        }
+                    } else {
+                        format!("{} ", matches[0])
+                    };
+                    
                     let candidate = Pair {
                         display: matches[0].clone(),
-                        replacement: format!("{} ", matches[0]),
+                        replacement: completion,
                     };
                     return Ok((pos - partial.len(), vec![candidate]));
                 }
@@ -368,11 +411,22 @@ fn main() {
                     // First tab press or new input: complete to LCP
                     *state = Some((partial.to_string(), 1, matches.clone()));
                     
+                    let completion_lcp = if partial.contains('/') {
+                        // For nested paths, reconstruct the full path with LCP
+                        if let Some(last_slash_pos) = partial.rfind('/') {
+                            format!("{}{}", &partial[..=last_slash_pos], lcp)
+                        } else {
+                            lcp.clone()
+                        }
+                    } else {
+                        lcp.clone()
+                    };
+                    
                     // If LCP is longer than the current partial input, complete to it
-                    if lcp.len() > partial.len() {
+                    if completion_lcp.len() > partial.len() {
                         let candidate = Pair {
                             display: lcp.clone(),
-                            replacement: lcp,
+                            replacement: completion_lcp,
                         };
                         return Ok((pos - partial.len(), vec![candidate]));
                     } else {
