@@ -1,10 +1,11 @@
-use std::io::{self, Write};
+use std::io::Write;
 use std::process;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::sync::Mutex;
+use rustyline::config::{Builder, CompletionType};
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     let mut executables = HashSet::new();
@@ -44,24 +45,29 @@ fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     result
 }
 
-fn find_files_in_current_dir_matching(prefix: &str) -> Vec<String> {
+fn find_files_in_current_dir_matching(prefix: &str) -> Vec<(String, bool)> {
     let mut files = Vec::new();
     
     if let Ok(entries) = fs::read_dir(".") {
         for entry in entries.flatten() {
             if let Ok(file_name) = entry.file_name().into_string() {
+                // Skip . and .. 
+                if file_name == "." || file_name == ".." {
+                    continue;
+                }
                 if file_name.starts_with(prefix) {
-                    files.push(file_name);
+                    let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+                    files.push((file_name, is_dir));
                 }
             }
         }
     }
     
-    files.sort();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     files
 }
 
-fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<String> {
+fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<(String, bool)> {
     let mut files = Vec::new();
     
     let path = Path::new(dir_path);
@@ -72,14 +78,19 @@ fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<String> {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
             if let Ok(file_name) = entry.file_name().into_string() {
+                // Skip . and ..
+                if file_name == "." || file_name == ".." {
+                    continue;
+                }
                 if file_name.starts_with(prefix) {
-                    files.push(file_name);
+                    let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
+                    files.push((file_name, is_dir));
                 }
             }
         }
     }
     
-    files.sort();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     files
 }
 
@@ -311,7 +322,8 @@ fn main() {
     use rustyline::{Context, Helper};
 
     struct ShellHelper {
-        tab_state: Mutex<Option<(String, usize, Vec<String>)>>,
+        // Store: (last_line, dir_path, prefix, matches, current_index)
+        tab_state: Mutex<Option<(String, String, String, Vec<(String, bool)>, usize)>>,
     }
 
     impl Helper for ShellHelper {}
@@ -338,104 +350,51 @@ fn main() {
                 // Extract the partial filename/argument after the last space
                 let partial = &slice[last_space_pos + 1..];
                 
-                // Check if partial contains a '/' (nested path)
-                let matches = if let Some(last_slash_pos) = partial.rfind('/') {
-                    // Split at the last '/'
-                    let dir_path = &partial[..=last_slash_pos];
-                    let prefix = &partial[last_slash_pos + 1..];
-                    
-                    // Find matching files in the specified directory
-                    find_files_in_path_matching(dir_path, prefix)
+                // Determine if we need to search in a directory or current dir
+                let (dir_path, prefix, replacement_base) = if let Some(last_slash_pos) = partial.rfind('/') {
+                    // If there's a slash, split at the last slash
+                    let dir = &partial[..=last_slash_pos];
+                    let pre = &partial[last_slash_pos + 1..];
+                    (dir, pre, dir)
                 } else {
-                    // Find matching files in the current directory
-                    find_files_in_current_dir_matching(partial)
+                    // No slash, search in current directory
+                    (".", partial, "")
+                };
+                
+                // Find matching files
+                let matches = if dir_path == "." {
+                    find_files_in_current_dir_matching(prefix)
+                } else {
+                    find_files_in_path_matching(dir_path, prefix)
                 };
                 
                 if matches.is_empty() {
-                    // No matches found, ring the bell
-                    print!("\x07");
-                    io::stdout().flush().ok();
+                    // No matches found
+                    *self.tab_state.lock().unwrap() = None;
                     return Ok((pos, vec![]));
                 }
                 
-                // For single match, complete with trailing space
+                // For single match, auto-complete it
                 if matches.len() == 1 {
-                    let completion = if partial.contains('/') {
-                        // For nested paths, reconstruct the full path
-                        if let Some(last_slash_pos) = partial.rfind('/') {
-                            format!("{}{} ", &partial[..=last_slash_pos], matches[0])
-                        } else {
-                            format!("{} ", matches[0])
-                        }
-                    } else {
-                        format!("{} ", matches[0])
-                    };
-                    
-                    let candidate = Pair {
-                        display: matches[0].clone(),
-                        replacement: completion,
-                    };
-                    return Ok((pos - partial.len(), vec![candidate]));
+                    let (match_name, is_dir) = &matches[0];
+                    let suffix = if *is_dir { "/" } else { " " };
+
+                    let completion = format!("{}{}{}", replacement_base, match_name, suffix);
+
+                    *self.tab_state.lock().unwrap() = None;
+
+                    return Ok((
+                        last_space_pos + 1,
+                        vec![Pair {
+                            display: match_name.clone(),
+                            replacement: completion,
+                        }],
+                    ));
                 }
-                
-                // For multiple matches, use longest common prefix logic
-                let lcp = longest_common_prefix(&matches);
-                
-                // Track the tab execution state for multiple matches
-                let mut state = self.tab_state.lock().unwrap();
-                let (last_prefix, count, last_matches) = state.take().unwrap_or((String::new(), 0, vec![]));
-                
-                if last_prefix == partial && last_matches == matches {
-                    // User pressed tab again on the same input
-                    let new_count = count + 1;
-                    if new_count >= 2 {
-                        // On the second tab press: print matches on a new line separated by spaces
-                        println!();
-                        println!("{}", matches.join("  "));
-                        
-                        *state = None; // Reset the cycle
-                        
-                        // Pass a dummy candidate that matches exactly what the user typed
-                        let candidate = Pair {
-                            display: partial.to_string(),
-                            replacement: partial.to_string(),
-                        };
-                        return Ok((pos - partial.len(), vec![candidate]));
-                    } else {
-                        print!("\x07");
-                        io::stdout().flush().ok();
-                        *state = Some((partial.to_string(), new_count, matches.clone()));
-                        return Ok((pos, vec![]));
-                    }
-                } else {
-                    // First tab press or new input: complete to LCP
-                    *state = Some((partial.to_string(), 1, matches.clone()));
-                    
-                    let completion_lcp = if partial.contains('/') {
-                        // For nested paths, reconstruct the full path with LCP
-                        if let Some(last_slash_pos) = partial.rfind('/') {
-                            format!("{}{}", &partial[..=last_slash_pos], lcp)
-                        } else {
-                            lcp.clone()
-                        }
-                    } else {
-                        lcp.clone()
-                    };
-                    
-                    // If LCP is longer than the current partial input, complete to it
-                    if completion_lcp.len() > partial.len() {
-                        let candidate = Pair {
-                            display: lcp.clone(),
-                            replacement: completion_lcp,
-                        };
-                        return Ok((pos - partial.len(), vec![candidate]));
-                    } else {
-                        // LCP is same as current input, ring bell
-                        print!("\x07");
-                        io::stdout().flush().ok();
-                        return Ok((pos, vec![]));
-                    }
-                }
+
+                *self.tab_state.lock().unwrap() = None;
+                return Ok((pos, vec![]));
+
             } else {
                 // We're completing the command itself (no space in the line)
                 if !slice.is_empty() {
@@ -455,8 +414,7 @@ fn main() {
 
                     // If there are no matches at all, ring the bell and return empty
                     if matches.is_empty() {
-                        print!("\x07");
-                        io::stdout().flush().ok();
+                        *self.tab_state.lock().unwrap() = None;
                         return Ok((pos, vec![]));
                     }
 
@@ -466,6 +424,18 @@ fn main() {
                             display: matches[0].clone(),
                             replacement: format!("{} ", matches[0]),
                         };
+                        
+                        // Store state for next tab press
+                        let completed_line = format!("{} ", matches[0]);
+                        let matches_as_tuples: Vec<(String, bool)> = matches.iter().map(|m| (m.clone(), false)).collect();
+                        *self.tab_state.lock().unwrap() = Some((
+                            completed_line,
+                            String::new(),
+                            String::new(),
+                            matches_as_tuples,
+                            0,
+                        ));
+                        
                         return Ok((0, vec![candidate]));
                     }
 
@@ -474,33 +444,29 @@ fn main() {
 
                     // Track the tab execution state for multiple matches
                     let mut state = self.tab_state.lock().unwrap();
-                    let (last_prefix, count, last_matches) = state.take().unwrap_or((String::new(), 0, vec![]));
+                    let (last_line, _, _, last_matches, current_index) = state.take().unwrap_or((String::new(), String::new(), String::new(), vec![], 0));
 
-                    if last_prefix == slice && last_matches == matches {
+                    let matches_as_tuples: Vec<(String, bool)> = matches.iter().map(|m| (m.clone(), false)).collect();
+
+                    if last_line == line && last_matches.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>() == matches {
                         // User pressed tab again on the same input
-                        let new_count = count + 1;
-                        if new_count >= 2 {
-                            // On the second tab press: print matches on a new line separated by spaces
-                            println!();
-                            println!("{}", matches.join("  "));
-                            
-                            *state = None; // Reset the cycle
-                            
-                            // Pass a dummy candidate that matches exactly what the user typed.
-                            let candidate = Pair {
-                                display: slice.to_string(),
-                                replacement: slice.to_string(),
-                            };
-                            return Ok((0, vec![candidate]));
-                        } else {
-                            print!("\x07");
-                            io::stdout().flush().ok();
-                            *state = Some((slice.to_string(), new_count, matches.clone()));
-                            return Ok((pos, vec![]));
-                        }
+                        let new_index = (current_index + 1) % matches.len();
+                        
+                        // On the second+ tab press: print matches on a new line separated by spaces
+                        println!();
+                        println!("{}", matches.join("  "));
+                        
+                        *state = Some((line.to_string(), String::new(), String::new(), matches_as_tuples, new_index));
+                        
+                        // Return exactly what the user typed (no completion)
+                        let candidate = Pair {
+                            display: slice.to_string(),
+                            replacement: slice.to_string(),
+                        };
+                        return Ok((0, vec![candidate]));
                     } else {
                         // First tab press or new input: complete to LCP
-                        *state = Some((slice.to_string(), 1, matches.clone()));
+                        *state = Some((line.to_string(), String::new(), String::new(), matches_as_tuples, 0));
                         
                         // If LCP is longer than the current input, complete to it
                         if lcp.len() > slice.len() {
@@ -511,8 +477,6 @@ fn main() {
                             return Ok((0, vec![candidate]));
                         } else {
                             // LCP is same as current input, ring bell
-                            print!("\x07");
-                            io::stdout().flush().ok();
                             return Ok((pos, vec![]));
                         }
                     }
@@ -524,8 +488,8 @@ fn main() {
     }
 
     let config = Builder::new()
+        .completion_type(CompletionType::List)
         .auto_add_history(true)
-        .bell_style(rustyline::config::BellStyle::Visible)
         .build();
 
     let mut rl = Editor::<ShellHelper, _>::with_config(config).unwrap();
