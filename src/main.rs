@@ -95,7 +95,7 @@ fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<(String, boo
 }
 
 fn is_builtin(cmd: &str) -> bool {
-    matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd")
+    matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd" | "complete")
 }
 
 fn find_executable_in_path(command: &str) -> Option<String> {
@@ -502,7 +502,7 @@ fn main() {
                     let mut matches = find_executables_in_path_matching(slice);
 
                     // 2. Add matching builtins
-                    let builtins = ["echo", "exit", "type", "pwd", "cd"];
+                    let builtins = ["echo", "exit", "type", "pwd", "cd", "complete"];
                     for builtin in builtins {
                         if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
                             matches.push(builtin.to_string());
@@ -708,6 +708,10 @@ fn main() {
                     } else {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
+                } else if cmd == "complete" {
+                    // For now, just accept the complete command without doing anything
+                    // This stage only requires registering complete as a builtin
+                    // Actual completion logic will be implemented in later stages
                 } else {
                     let args = parts[1..].to_vec();
                     if let Err(e) = execute_external_program(cmd, &args, redirection) {
