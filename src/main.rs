@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::sync::Mutex;
-use rustyline::config::{Builder, CompletionType};
+use rustyline::config::CompletionType;
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     let mut executables = HashSet::new();
@@ -322,8 +322,8 @@ fn main() {
     use rustyline::{Context, Helper};
 
     struct ShellHelper {
-        // Store: (last_line, dir_path, prefix, matches, current_index)
-        tab_state: Mutex<Option<(String, String, String, Vec<(String, bool)>, usize)>>,
+        // Store: (last_line, dir_path, prefix, matches, is_first_tab)
+        tab_state: Mutex<Option<(String, String, String, Vec<(String, bool)>, bool)>>,
     }
 
     impl Helper for ShellHelper {}
@@ -392,8 +392,77 @@ fn main() {
                     ));
                 }
 
-                *self.tab_state.lock().unwrap() = None;
-                return Ok((pos, vec![]));
+                // Multiple matches found
+                let mut state = self.tab_state.lock().unwrap();
+                
+                // Check if this is the same context as the previous tab
+                let is_first_tab = if let Some((last_line, last_dir, last_prefix, _last_matches, was_first)) = state.as_ref() {
+                    let same_context = last_line == line && last_dir == dir_path && last_prefix == prefix;
+                    if same_context && *was_first {
+                        // Same context, user pressed tab again
+                        false
+                    } else if same_context && !*was_first {
+                        // User pressed tab again on subsequent attempt
+                        false
+                    } else {
+                        // Different context or first time
+                        true
+                    }
+                } else {
+                    // First time with these matches
+                    true
+                };
+
+                if is_first_tab {
+                    // First TAB: ring bell and store state
+                    print!("\x07");
+                    std::io::stdout().flush().ok();
+                    
+                    *state = Some((
+                        line.to_string(),
+                        dir_path.to_string(),
+                        prefix.to_string(),
+                        matches.clone(),
+                        true,
+                    ));
+                    
+                    // Return no completion to avoid changing the input
+                    return Ok((pos, vec![]));
+                } else {
+                    // Subsequent TABs: list matches
+                    // Format matches with directories showing /
+                    let formatted_matches: Vec<String> = matches
+                        .iter()
+                        .map(|(name, is_dir)| {
+                            if *is_dir {
+                                format!("{}/", name)
+                            } else {
+                                name.clone()
+                            }
+                        })
+                        .collect();
+                    
+                    // Print on a new line with two-space separation
+                    let output = formatted_matches.join("  ");
+                    // Write directly to stdout to display matches
+                    println!();
+                    print!("{}", output);
+                    println!();
+                    print!("$ {}", line);
+                    std::io::stdout().flush().ok();
+                    
+                    // Update state to reflect we're no longer on first tab
+                    *state = Some((
+                        line.to_string(),
+                        dir_path.to_string(),
+                        prefix.to_string(),
+                        matches.clone(),
+                        false,
+                    ));
+                    
+                    // Return empty to avoid making any modifications to the input
+                    return Ok((pos, vec![]));
+                }
 
             } else {
                 // We're completing the command itself (no space in the line)
@@ -425,16 +494,7 @@ fn main() {
                             replacement: format!("{} ", matches[0]),
                         };
                         
-                        // Store state for next tab press
-                        let completed_line = format!("{} ", matches[0]);
-                        let matches_as_tuples: Vec<(String, bool)> = matches.iter().map(|m| (m.clone(), false)).collect();
-                        *self.tab_state.lock().unwrap() = Some((
-                            completed_line,
-                            String::new(),
-                            String::new(),
-                            matches_as_tuples,
-                            0,
-                        ));
+                        *self.tab_state.lock().unwrap() = None;
                         
                         return Ok((0, vec![candidate]));
                     }
@@ -444,31 +504,19 @@ fn main() {
 
                     // Track the tab execution state for multiple matches
                     let mut state = self.tab_state.lock().unwrap();
-                    let (last_line, _, _, last_matches, current_index) = state.take().unwrap_or((String::new(), String::new(), String::new(), vec![], 0));
-
-                    let matches_as_tuples: Vec<(String, bool)> = matches.iter().map(|m| (m.clone(), false)).collect();
-
-                    if last_line == line && last_matches.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>() == matches {
-                        // User pressed tab again on the same input
-                        let new_index = (current_index + 1) % matches.len();
-                        
-                        // On the second+ tab press: print matches on a new line separated by spaces
-                        println!();
-                        println!("{}", matches.join("  "));
-                        
-                        *state = Some((line.to_string(), String::new(), String::new(), matches_as_tuples, new_index));
-                        
-                        // Return exactly what the user typed (no completion)
-                        let candidate = Pair {
-                            display: slice.to_string(),
-                            replacement: slice.to_string(),
-                        };
-                        return Ok((0, vec![candidate]));
+                    
+                    // Check if we're in the same completion context
+                    let is_first_tab = if let Some((last_line, _, _, last_matches, _)) = state.as_ref() {
+                        let last_matches_names: Vec<String> = last_matches.iter().map(|(n, _)| n.clone()).collect();
+                        !(last_line == line && last_matches_names == matches)
                     } else {
-                        // First tab press or new input: complete to LCP
-                        *state = Some((line.to_string(), String::new(), String::new(), matches_as_tuples, 0));
+                        true
+                    };
+
+                    if is_first_tab {
+                        // First tab: complete to LCP and ring bell if no change
+                        *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), true));
                         
-                        // If LCP is longer than the current input, complete to it
                         if lcp.len() > slice.len() {
                             let candidate = Pair {
                                 display: lcp.clone(),
@@ -477,8 +525,23 @@ fn main() {
                             return Ok((0, vec![candidate]));
                         } else {
                             // LCP is same as current input, ring bell
+                            print!("\x07");
+                            std::io::stdout().flush().ok();
                             return Ok((pos, vec![]));
                         }
+                    } else {
+                        // Subsequent tab presses: show all matches
+                        let output = matches.join("  ");
+                        println!();
+                        print!("{}", output);
+                        println!();
+                        print!("$ {}", line);
+                        std::io::stdout().flush().ok();
+                        
+                        *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), false));
+                        
+                        // Return empty to avoid making any modifications
+                        return Ok((pos, vec![]));
                     }
                 }
             }
