@@ -3,9 +3,14 @@ use std::process;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
 use rustyline::config::CompletionType;
+
+// Global storage for registered completions
+lazy_static::lazy_static! {
+    static ref COMPLETIONS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
+}
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
     let mut executables = HashSet::new();
@@ -715,8 +720,25 @@ fn main() {
                         continue;
                     }
                     
-                    // Check if -p flag is provided
-                    if parts[1] == "-p" {
+                    // Check if -C flag is provided (register completion)
+                    if parts[1] == "-C" {
+                        // -C flag requires at least: complete -C <path> <command>
+                        if parts.len() < 4 {
+                            eprintln!("complete: -C: option requires an argument");
+                            continue;
+                        }
+                        
+                        let completer_path = &parts[2];
+                        let command_name = &parts[3];
+                        
+                        // Register the completion
+                        let mut completions = COMPLETIONS.lock().unwrap();
+                        completions.insert(command_name.clone(), completer_path.clone());
+                        
+                        // The -C flag produces no output on success
+                    }
+                    // Check if -p flag is provided (display completion)
+                    else if parts[1] == "-p" {
                         // -p flag requires a command name
                         if parts.len() < 3 {
                             eprintln!("complete: -p: option requires an argument");
@@ -724,10 +746,16 @@ fn main() {
                         }
                         
                         let command_name = &parts[2];
-                        // Print the error message for no completion specification
-                        eprintln!("complete: {}: no completion specification", command_name);
+                        let completions = COMPLETIONS.lock().unwrap();
+                        
+                        if let Some(completer_path) = completions.get(command_name) {
+                            // Print in normalized format: complete -C '<path>' <command>
+                            println!("complete -C '{}' {}", completer_path, command_name);
+                        } else {
+                            // Print error message for no completion specification
+                            eprintln!("complete: {}: no completion specification", command_name);
+                        }
                     }
-                    // For other cases or future flags, we can add more handling here
                 } else {
                     let args = parts[1..].to_vec();
                     if let Err(e) = execute_external_program(cmd, &args, redirection) {
