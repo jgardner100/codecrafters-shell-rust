@@ -133,6 +133,27 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Invoke a registered completer script and return its output
+/// Runs the completer script as a separate process and reads its stdout
+fn invoke_completer(script_path: &str) -> Option<String> {
+    let output = process::Command::new("sh")
+        .arg("-c")
+        .arg(script_path)
+        .output()
+        .ok()?;
+
+    // Wait for the completer script to finish and check status
+    if !output.status.success() {
+        return None;
+    }
+
+    // Read stdout and get the first line of output
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    
+    // Return the first line from the output, trimmed
+    stdout.lines().next().map(|s| s.to_string())
+}
+
 /// Calculate the longest common prefix (LCP) of all strings in the list
 fn longest_common_prefix(strings: &[String]) -> String {
     if strings.is_empty() {
@@ -359,9 +380,135 @@ fn main() {
         ) -> rustyline::Result<(usize, Vec<Pair>)> {
             let slice = &line[..pos];
 
-            // Check if there's a space in the line (indicating we're completing an argument)
-            if let Some(last_space_pos) = slice.rfind(' ') {
+            // Check if we're completing the command itself (no space in the line)
+            if !slice.contains(' ') && !slice.is_empty() {
+                // We're completing the command itself
+                let partial_cmd = slice;
+
+                // 1. Check if a completer is registered for this partial command
+                let completer_for_cmd = {
+                    let completions = COMPLETIONS.lock().unwrap();
+                    completions.get(partial_cmd).cloned()
+                };
+
+                if let Some(completer_path) = completer_for_cmd {
+                    // We have a registered completer for this command
+                    // Run the completer script and get its output
+                    if let Some(completion) = invoke_completer(&completer_path) {
+                        // Return the completion with a trailing space
+                        return Ok((
+                            0,
+                            vec![Pair {
+                                display: completion.clone(),
+                                replacement: format!("{} ", completion),
+                            }],
+                        ));
+                    }
+                }
+
+                // If no registered completer, use default completion logic
+                // 1. Gather all matching executables from PATH
+                let mut matches = find_executables_in_path_matching(slice);
+
+                // 2. Add matching builtins
+                let builtins = ["echo", "exit", "type", "pwd", "cd", "complete"];
+                for builtin in builtins {
+                    if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
+                        matches.push(builtin.to_string());
+                    }
+                }
+
+                // Sort the total combined list alphabetically
+                matches.sort();
+
+                // If there are no matches at all, ring the bell and return empty
+                if matches.is_empty() {
+                    *self.tab_state.lock().unwrap() = None;
+                    return Ok((pos, vec![]));
+                }
+
+                // For single matches, complete automatically with a trailing space
+                if matches.len() == 1 {
+                    let candidate = Pair {
+                        display: matches[0].clone(),
+                        replacement: format!("{} ", matches[0]),
+                    };
+                    
+                    *self.tab_state.lock().unwrap() = None;
+                    
+                    return Ok((0, vec![candidate]));
+                }
+
+                // For multiple matches: use longest common prefix (LCP) logic
+                let lcp = longest_common_prefix(&matches);
+
+                // Track the tab execution state for multiple matches
+                let mut state = self.tab_state.lock().unwrap();
+                
+                // Check if we're in the same completion context
+                let is_first_tab = if let Some((last_line, _, _, last_matches, _)) = state.as_ref() {
+                    let last_matches_names: Vec<String> = last_matches.iter().map(|(n, _)| n.clone()).collect();
+                    !(last_line == line && last_matches_names == matches)
+                } else {
+                    true
+                };
+
+                if is_first_tab {
+                    // First tab: complete to LCP if it extends beyond current input
+                    *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), true));
+                    
+                    if lcp.len() > slice.len() {
+                        let candidate = Pair {
+                            display: lcp.clone(),
+                            replacement: lcp,
+                        };
+                        return Ok((0, vec![candidate]));
+                    } else {
+                        // LCP is same as current input, ring bell
+                        print!("\x07");
+                        std::io::stdout().flush().ok();
+                        return Ok((pos, vec![]));
+                    }
+                } else {
+                    // Subsequent tab presses: show all matches
+                    let output = matches.join("  ");
+                    println!();
+                    print!("{}", output);
+                    println!();
+                    print!("$ {}", line);
+                    std::io::stdout().flush().ok();
+                    
+                    *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), false));
+                    
+                    // Return empty to avoid making any modifications
+                    return Ok((pos, vec![]));
+                }
+            } else if let Some(last_space_pos) = slice.rfind(' ') {
                 // We're completing an argument (not the command)
+                let cmd = slice[..last_space_pos].trim();
+                
+                // First, check if a completer is registered for this command
+                let completer_for_cmd = {
+                    let completions = COMPLETIONS.lock().unwrap();
+                    completions.get(cmd).cloned()
+                };
+
+                if let Some(completer_path) = completer_for_cmd {
+                    // We have a registered completer for this command
+                    // Run the completer script and get its output
+                    if let Some(completion) = invoke_completer(&completer_path) {
+                        // Return the completion with a trailing space
+                        return Ok((
+                            last_space_pos + 1,
+                            vec![Pair {
+                                display: completion.clone(),
+                                replacement: format!("{} ", completion),
+                            }],
+                        ));
+                    }
+                }
+
+                // If no registered completer, use default file completion logic
                 // Extract the partial filename/argument after the last space
                 let partial = &slice[last_space_pos + 1..];
                 
@@ -412,7 +559,7 @@ fn main() {
                 let mut state = self.tab_state.lock().unwrap();
                 
                 // Check if this is the same context as the previous tab
-                let is_first_tab = if let Some((last_line, last_dir, last_prefix, _last_matches, was_first)) = state.as_ref() {
+                let is_first_tab = if let Some((last_line, last_dir, last_prefix, _last_matches, _was_first)) = state.as_ref() {
                     let same_context = last_line == line && last_dir == dir_path && last_prefix == prefix;
                     if same_context {
                         // Same context, this is not the first tab anymore
@@ -498,87 +645,6 @@ fn main() {
                     
                     // Return empty to avoid making any modifications to the input
                     return Ok((pos, vec![]));
-                }
-
-            } else {
-                // We're completing the command itself (no space in the line)
-                if !slice.is_empty() {
-                    // 1. Gather all matching executables from PATH
-                    let mut matches = find_executables_in_path_matching(slice);
-
-                    // 2. Add matching builtins
-                    let builtins = ["echo", "exit", "type", "pwd", "cd", "complete"];
-                    for builtin in builtins {
-                        if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
-                            matches.push(builtin.to_string());
-                        }
-                    }
-
-                    // Sort the total combined list alphabetically
-                    matches.sort();
-
-                    // If there are no matches at all, ring the bell and return empty
-                    if matches.is_empty() {
-                        *self.tab_state.lock().unwrap() = None;
-                        return Ok((pos, vec![]));
-                    }
-
-                    // For single matches, complete automatically with a trailing space
-                    if matches.len() == 1 {
-                        let candidate = Pair {
-                            display: matches[0].clone(),
-                            replacement: format!("{} ", matches[0]),
-                        };
-                        
-                        *self.tab_state.lock().unwrap() = None;
-                        
-                        return Ok((0, vec![candidate]));
-                    }
-
-                    // For multiple matches: use longest common prefix (LCP) logic
-                    let lcp = longest_common_prefix(&matches);
-
-                    // Track the tab execution state for multiple matches
-                    let mut state = self.tab_state.lock().unwrap();
-                    
-                    // Check if we're in the same completion context
-                    let is_first_tab = if let Some((last_line, _, _, last_matches, _)) = state.as_ref() {
-                        let last_matches_names: Vec<String> = last_matches.iter().map(|(n, _)| n.clone()).collect();
-                        !(last_line == line && last_matches_names == matches)
-                    } else {
-                        true
-                    };
-
-                    if is_first_tab {
-                        // First tab: complete to LCP if it extends beyond current input
-                        *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), true));
-                        
-                        if lcp.len() > slice.len() {
-                            let candidate = Pair {
-                                display: lcp.clone(),
-                                replacement: lcp,
-                            };
-                            return Ok((0, vec![candidate]));
-                        } else {
-                            // LCP is same as current input, ring bell
-                            print!("\x07");
-                            std::io::stdout().flush().ok();
-                            return Ok((pos, vec![]));
-                        }
-                    } else {
-                        // Subsequent tab presses: show all matches
-                        let output = matches.join("  ");
-                        println!();
-                        print!("{}", output);
-                        println!();
-                        print!("$ {}", line);
-                        std::io::stdout().flush().ok();
-                        
-                        *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), false));
-                        
-                        // Return empty to avoid making any modifications
-                        return Ok((pos, vec![]));
-                    }
                 }
             }
 
