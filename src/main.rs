@@ -153,6 +153,16 @@ fn longest_common_prefix(strings: &[String]) -> String {
     lcp
 }
 
+/// Calculate the longest common prefix for files (without considering is_dir)
+fn longest_common_prefix_files(files: &[(String, bool)]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    
+    let names: Vec<String> = files.iter().map(|(name, _)| name.clone()).collect();
+    longest_common_prefix(&names)
+}
+
 #[derive(Debug, Clone)]
 struct Redirection {
     stdout_target: Option<(String, bool)>,
@@ -374,11 +384,10 @@ fn main() {
                     return Ok((pos, vec![]));
                 }
                 
-                // For single match, auto-complete it
+                // For single match, auto-complete it with trailing character
                 if matches.len() == 1 {
                     let (match_name, is_dir) = &matches[0];
                     let suffix = if *is_dir { "/" } else { " " };
-
                     let completion = format!("{}{}{}", replacement_base, match_name, suffix);
 
                     *self.tab_state.lock().unwrap() = None;
@@ -392,20 +401,19 @@ fn main() {
                     ));
                 }
 
-                // Multiple matches found
+                // Multiple matches found - use LCP logic
+                let lcp = longest_common_prefix_files(&matches);
+                
                 let mut state = self.tab_state.lock().unwrap();
                 
                 // Check if this is the same context as the previous tab
                 let is_first_tab = if let Some((last_line, last_dir, last_prefix, _last_matches, was_first)) = state.as_ref() {
                     let same_context = last_line == line && last_dir == dir_path && last_prefix == prefix;
-                    if same_context && *was_first {
-                        // Same context, user pressed tab again
-                        false
-                    } else if same_context && !*was_first {
-                        // User pressed tab again on subsequent attempt
+                    if same_context {
+                        // Same context, this is not the first tab anymore
                         false
                     } else {
-                        // Different context or first time
+                        // Different context, this is a new first tab
                         true
                     }
                 } else {
@@ -414,20 +422,43 @@ fn main() {
                 };
 
                 if is_first_tab {
-                    // First TAB: ring bell and store state
-                    print!("\x07");
-                    std::io::stdout().flush().ok();
+                    // First TAB: try to complete to LCP
                     
-                    *state = Some((
-                        line.to_string(),
-                        dir_path.to_string(),
-                        prefix.to_string(),
-                        matches.clone(),
-                        true,
-                    ));
-                    
-                    // Return no completion to avoid changing the input
-                    return Ok((pos, vec![]));
+                    // Check if LCP is longer than current prefix
+                    if lcp.len() > prefix.len() {
+                        // LCP extends beyond current input, complete to LCP
+                        let completion = format!("{}{}", replacement_base, lcp);
+                        
+                        *state = Some((
+                            line.to_string(),
+                            dir_path.to_string(),
+                            prefix.to_string(),
+                            matches.clone(),
+                            true,
+                        ));
+                        
+                        return Ok((
+                            last_space_pos + 1,
+                            vec![Pair {
+                                display: lcp.clone(),
+                                replacement: completion,
+                            }],
+                        ));
+                    } else {
+                        // LCP is same as current prefix, ring bell
+                        print!("\x07");
+                        std::io::stdout().flush().ok();
+                        
+                        *state = Some((
+                            line.to_string(),
+                            dir_path.to_string(),
+                            prefix.to_string(),
+                            matches.clone(),
+                            true,
+                        ));
+                        
+                        return Ok((pos, vec![]));
+                    }
                 } else {
                     // Subsequent TABs: list matches
                     // Format matches with directories showing /
@@ -451,7 +482,7 @@ fn main() {
                     print!("$ {}", line);
                     std::io::stdout().flush().ok();
                     
-                    // Update state to reflect we're no longer on first tab
+                    // Update state to reflect we're still on subsequent tabs
                     *state = Some((
                         line.to_string(),
                         dir_path.to_string(),
@@ -514,7 +545,7 @@ fn main() {
                     };
 
                     if is_first_tab {
-                        // First tab: complete to LCP and ring bell if no change
+                        // First tab: complete to LCP if it extends beyond current input
                         *state = Some((line.to_string(), String::new(), String::new(), matches.iter().map(|m| (m.clone(), false)).collect(), true));
                         
                         if lcp.len() > slice.len() {
