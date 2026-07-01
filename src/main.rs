@@ -137,6 +137,8 @@ fn invoke_completer(
     script_path: &str,
     cmd_parts: &[String],
     word_index: usize,
+    comp_line: &str,
+    comp_point: usize,
 ) -> Option<String> {
     let mut command = process::Command::new(script_path);
 
@@ -158,7 +160,9 @@ fn invoke_completer(
         .arg(current_word)
         .arg(previous_word);
 
-    // keep your COMP_* environment variables if desired
+    // Set COMP_LINE and COMP_POINT environment variables
+    command.env("COMP_LINE", comp_line);
+    command.env("COMP_POINT", comp_point.to_string());
 
     let output = command.output().ok()?;
 
@@ -416,7 +420,7 @@ fn main() {
                     // We have a registered completer for this command
                     // Run the completer script and get its output
                     let cmd_parts = vec![partial_cmd.to_string()];
-                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, 0) {
+                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, 0, line, pos) {
                         // Return the completion with a trailing space
                         return Ok((
                             0,
@@ -539,7 +543,7 @@ fn main() {
                     let word_index = cmd_parts.len() - 1;
                     
                     // Run the completer script and get its output
-                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, word_index) {
+                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, word_index, line, pos) {
                         // Get the position where we should start replacing
                         // This is right after the last space
                         let start_pos = last_space_pos + 1;
