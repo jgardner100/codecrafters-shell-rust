@@ -133,23 +133,44 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Invoke a registered completer script and return its output
-/// Runs the completer script as a separate process and reads its stdout
-fn invoke_completer(script_path: &str) -> Option<String> {
-    let output = process::Command::new("sh")
-        .arg("-c")
-        .arg(script_path)
-        .output()
-        .ok()?;
+fn invoke_completer(
+    script_path: &str,
+    cmd_parts: &[String],
+    word_index: usize,
+) -> Option<String> {
+    let mut command = process::Command::new(script_path);
 
-    // Wait for the completer script to finish and check status
+    // argv[1] = command name
+    let command_name = &cmd_parts[0];
+
+    // argv[2] = word currently being completed
+    let current_word = &cmd_parts[word_index];
+
+    // argv[3] = previous word (or "")
+    let previous_word = if word_index > 0 {
+        &cmd_parts[word_index - 1]
+    } else {
+        ""
+    };
+
+    command
+        .arg(command_name)
+        .arg(current_word)
+        .arg(previous_word);
+
+    // keep your COMP_* environment variables if desired
+
+    let output = command.output().ok()?;
+
+    // Check status
     if !output.status.success() {
+        eprintln!("Completer error: {}", String::from_utf8_lossy(&output.stderr));
         return None;
     }
 
     // Read stdout and get the first line of output
     let stdout = String::from_utf8(output.stdout).ok()?;
-    
+
     // Return the first line from the output, trimmed
     stdout.lines().next().map(|s| s.to_string())
 }
@@ -394,7 +415,8 @@ fn main() {
                 if let Some(completer_path) = completer_for_cmd {
                     // We have a registered completer for this command
                     // Run the completer script and get its output
-                    if let Some(completion) = invoke_completer(&completer_path) {
+                    let cmd_parts = vec![partial_cmd.to_string()];
+                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, 0) {
                         // Return the completion with a trailing space
                         return Ok((
                             0,
@@ -487,19 +509,44 @@ fn main() {
                 // We're completing an argument (not the command)
                 let cmd = slice[..last_space_pos].trim();
                 
-                // First, check if a completer is registered for this command
+                // Extract the base command (first word)
+                let base_cmd = if let Some(space_in_cmd) = cmd.find(' ') {
+                    &cmd[..space_in_cmd]
+                } else {
+                    cmd
+                };
+                
+                // First, check if a completer is registered for the base command
                 let completer_for_cmd = {
                     let completions = COMPLETIONS.lock().unwrap();
-                    completions.get(cmd).cloned()
+                    completions.get(base_cmd).cloned()
                 };
 
                 if let Some(completer_path) = completer_for_cmd {
                     // We have a registered completer for this command
+                    // Parse all the parts of the current line
+                    let cmd_parts = parse_command_with_quotes(slice);
+                    
+                    // If cmd_parts is empty, something went wrong; return empty
+                    if cmd_parts.is_empty() {
+                        return Ok((pos, vec![]));
+                    }
+                    
+                    // The word_index is the index of the word being completed (1-based from the command)
+                    // cmd_parts[0] is the command name, so for arguments:
+                    // - first arg has index 1
+                    // - second arg has index 2, etc.
+                    let word_index = cmd_parts.len() - 1;
+                    
                     // Run the completer script and get its output
-                    if let Some(completion) = invoke_completer(&completer_path) {
+                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, word_index) {
+                        // Get the position where we should start replacing
+                        // This is right after the last space
+                        let start_pos = last_space_pos + 1;
+                        
                         // Return the completion with a trailing space
                         return Ok((
-                            last_space_pos + 1,
+                            start_pos,
                             vec![Pair {
                                 display: completion.clone(),
                                 replacement: format!("{} ", completion),
