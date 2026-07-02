@@ -139,7 +139,7 @@ fn invoke_completer(
     word_index: usize,
     comp_line: &str,
     comp_point: usize,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     let mut command = process::Command::new(script_path);
 
     // argv[1] = command name
@@ -172,11 +172,23 @@ fn invoke_completer(
         return None;
     }
 
-    // Read stdout and get the first line of output
+    // Read stdout and get all lines
     let stdout = String::from_utf8(output.stdout).ok()?;
 
-    // Return the first line from the output, trimmed
-    stdout.lines().next().map(|s| s.to_string())
+    // Collect all non-empty lines, sorted alphabetically
+    let mut candidates: Vec<String> = stdout
+        .lines()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    
+    candidates.sort();
+
+    if candidates.is_empty() {
+        None
+    } else {
+        Some(candidates)
+    }
 }
 
 /// Calculate the longest common prefix (LCP) of all strings in the list
@@ -420,15 +432,68 @@ fn main() {
                     // We have a registered completer for this command
                     // Run the completer script and get its output
                     let cmd_parts = vec![partial_cmd.to_string()];
-                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, 0, line, pos) {
-                        // Return the completion with a trailing space
-                        return Ok((
-                            0,
-                            vec![Pair {
-                                display: completion.clone(),
-                                replacement: format!("{} ", completion),
-                            }],
-                        ));
+                    if let Some(mut candidates) = invoke_completer(&completer_path, &cmd_parts, 0, line, pos) {
+                        // Handle multiple candidates
+                        if candidates.is_empty() {
+                            return Ok((pos, vec![]));
+                        }
+
+                        if candidates.len() == 1 {
+                            // Single candidate - auto-complete with trailing space
+                            return Ok((
+                                0,
+                                vec![Pair {
+                                    display: candidates[0].clone(),
+                                    replacement: format!("{} ", candidates[0]),
+                                }],
+                            ));
+                        }
+
+                        // Multiple candidates - use LCP logic
+                        let lcp = longest_common_prefix(&candidates);
+                        let mut state = self.tab_state.lock().unwrap();
+
+                        // Check if we're in the same completion context
+                        let is_first_tab = if let Some((last_line, _, _, last_matches, _)) = state.as_ref() {
+                            let last_matches_names: Vec<String> = last_matches.iter().map(|(n, _)| n.clone()).collect();
+                            !(last_line == line && last_matches_names == candidates)
+                        } else {
+                            true
+                        };
+
+                        if is_first_tab {
+                            // First TAB: ring the bell (since there's no unique completion)
+                            print!("\x07");
+                            std::io::stdout().flush().ok();
+
+                            *state = Some((
+                                line.to_string(),
+                                String::new(),
+                                String::new(),
+                                candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                true,
+                            ));
+
+                            return Ok((pos, vec![]));
+                        } else {
+                            // Second TAB: display all candidates
+                            let output = candidates.join("  ");
+                            println!();
+                            print!("{}", output);
+                            println!();
+                            print!("$ {}", line);
+                            std::io::stdout().flush().ok();
+
+                            *state = Some((
+                                line.to_string(),
+                                String::new(),
+                                String::new(),
+                                candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                false,
+                            ));
+
+                            return Ok((pos, vec![]));
+                        }
                     }
                 }
 
@@ -543,19 +608,70 @@ fn main() {
                     let word_index = cmd_parts.len() - 1;
                     
                     // Run the completer script and get its output
-                    if let Some(completion) = invoke_completer(&completer_path, &cmd_parts, word_index, line, pos) {
+                    if let Some(mut candidates) = invoke_completer(&completer_path, &cmd_parts, word_index, line, pos) {
                         // Get the position where we should start replacing
                         // This is right after the last space
                         let start_pos = last_space_pos + 1;
                         
-                        // Return the completion with a trailing space
-                        return Ok((
-                            start_pos,
-                            vec![Pair {
-                                display: completion.clone(),
-                                replacement: format!("{} ", completion),
-                            }],
-                        ));
+                        // Handle multiple candidates
+                        if candidates.is_empty() {
+                            return Ok((pos, vec![]));
+                        }
+
+                        if candidates.len() == 1 {
+                            // Single candidate - auto-complete with trailing space
+                            return Ok((
+                                start_pos,
+                                vec![Pair {
+                                    display: candidates[0].clone(),
+                                    replacement: format!("{} ", candidates[0]),
+                                }],
+                            ));
+                        }
+
+                        // Multiple candidates - use TAB logic
+                        let mut state = self.tab_state.lock().unwrap();
+
+                        // Check if we're in the same completion context
+                        let is_first_tab = if let Some((last_line, _, _, _, _)) = state.as_ref() {
+                            last_line != line
+                        } else {
+                            true
+                        };
+
+                        if is_first_tab {
+                            // First TAB: ring the bell (since there's no unique completion)
+                            print!("\x07");
+                            std::io::stdout().flush().ok();
+
+                            *state = Some((
+                                line.to_string(),
+                                String::new(),
+                                String::new(),
+                                candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                true,
+                            ));
+
+                            return Ok((pos, vec![]));
+                        } else {
+                            // Second TAB: display all candidates
+                            let output = candidates.join("  ");
+                            println!();
+                            print!("{}", output);
+                            println!();
+                            print!("$ {}", line);
+                            std::io::stdout().flush().ok();
+
+                            *state = Some((
+                                line.to_string(),
+                                String::new(),
+                                String::new(),
+                                candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                false,
+                            ));
+
+                            return Ok((pos, vec![]));
+                        }
                     }
                 }
 
