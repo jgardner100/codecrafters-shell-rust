@@ -613,6 +613,13 @@ fn main() {
                         // This is right after the last space
                         let start_pos = last_space_pos + 1;
                         
+                        // Extract the current word being completed
+                        let current_word = if let Some(w) = cmd_parts.last() {
+                            w.as_str()
+                        } else {
+                            ""
+                        };
+                        
                         // Handle multiple candidates
                         if candidates.is_empty() {
                             return Ok((pos, vec![]));
@@ -629,7 +636,8 @@ fn main() {
                             ));
                         }
 
-                        // Multiple candidates - use TAB logic
+                        // Multiple candidates - use LCP logic
+                        let lcp = longest_common_prefix(&candidates);
                         let mut state = self.tab_state.lock().unwrap();
 
                         // Check if we're in the same completion context
@@ -640,19 +648,39 @@ fn main() {
                         };
 
                         if is_first_tab {
-                            // First TAB: ring the bell (since there's no unique completion)
-                            print!("\x07");
-                            std::io::stdout().flush().ok();
+                            // First TAB: check if LCP extends current input
+                            if lcp.len() > current_word.len() {
+                                // LCP extends beyond current word, complete to LCP
+                                *state = Some((
+                                    line.to_string(),
+                                    String::new(),
+                                    current_word.to_string(),
+                                    candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                    true,
+                                ));
 
-                            *state = Some((
-                                line.to_string(),
-                                String::new(),
-                                String::new(),
-                                candidates.iter().map(|c| (c.clone(), false)).collect(),
-                                true,
-                            ));
+                                return Ok((
+                                    start_pos,
+                                    vec![Pair {
+                                        display: lcp.clone(),
+                                        replacement: lcp,
+                                    }],
+                                ));
+                            } else {
+                                // LCP doesn't extend beyond current word, ring bell
+                                print!("\x07");
+                                std::io::stdout().flush().ok();
 
-                            return Ok((pos, vec![]));
+                                *state = Some((
+                                    line.to_string(),
+                                    String::new(),
+                                    current_word.to_string(),
+                                    candidates.iter().map(|c| (c.clone(), false)).collect(),
+                                    true,
+                                ));
+
+                                return Ok((pos, vec![]));
+                            }
                         } else {
                             // Second TAB: display all candidates
                             let output = candidates.join("  ");
@@ -665,7 +693,7 @@ fn main() {
                             *state = Some((
                                 line.to_string(),
                                 String::new(),
-                                String::new(),
+                                current_word.to_string(),
                                 candidates.iter().map(|c| (c.clone(), false)).collect(),
                                 false,
                             ));
