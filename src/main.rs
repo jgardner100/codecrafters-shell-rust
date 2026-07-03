@@ -981,8 +981,24 @@ fn main() {
                         continue;
                     }
                     
+                    // Check if -r flag is provided (remove completion)
+                    if parts[1] == "-r" {
+                        // -r flag requires a command name
+                        if parts.len() < 3 {
+                            eprintln!("complete: -r: option requires an argument");
+                            continue;
+                        }
+                        
+                        let command_name = &parts[2];
+                        
+                        // Remove the completion (if it exists)
+                        let mut completions = COMPLETIONS.lock().unwrap();
+                        completions.remove(command_name);
+                        
+                        // The -r flag produces no output on success (even if command wasn't registered)
+                    }
                     // Check if -C flag is provided (register completion)
-                    if parts[1] == "-C" {
+                    else if parts[1] == "-C" {
                         // -C flag requires at least: complete -C <path> <command>
                         if parts.len() < 4 {
                             eprintln!("complete: -C: option requires an argument");
