@@ -100,7 +100,7 @@ fn find_files_in_path_matching(dir_path: &str, prefix: &str) -> Vec<(String, boo
 }
 
 fn is_builtin(cmd: &str) -> bool {
-    matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd" | "complete")
+    matches!(cmd, "echo" | "exit" | "type" | "pwd" | "cd" | "complete" | "jobs")
 }
 
 fn find_executable_in_path(command: &str) -> Option<String> {
@@ -502,7 +502,7 @@ fn main() {
                 let mut matches = find_executables_in_path_matching(slice);
 
                 // 2. Add matching builtins
-                let builtins = ["echo", "exit", "type", "pwd", "cd", "complete"];
+                let builtins = ["echo", "exit", "type", "pwd", "cd", "complete", "jobs"];
                 for builtin in builtins {
                     if builtin.starts_with(slice) && !matches.contains(&builtin.to_string()) {
                         matches.push(builtin.to_string());
@@ -974,6 +974,9 @@ fn main() {
                     } else {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
+                } else if cmd == "jobs" {
+                    // Empty implementation for jobs builtin
+                    // Currently produces no output
                 } else if cmd == "complete" {
                     // Handle the complete builtin command
                     if parts.len() < 2 {
