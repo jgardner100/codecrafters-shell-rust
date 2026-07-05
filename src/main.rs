@@ -10,6 +10,7 @@ use rustyline::config::CompletionType;
 // Global storage for registered completions
 lazy_static::lazy_static! {
     static ref COMPLETIONS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
+    static ref JOB_COUNTER: Mutex<u32> = Mutex::new(0);
 }
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
@@ -283,7 +284,7 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
     (command_parts, redirection)
 }
 
-fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection) -> Result<(), Box<dyn std::error::Error>> {
+fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection, run_background: bool) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(program_path) = find_executable_in_path(cmd) {
         let mut command = process::Command::new(&program_path);
         #[cfg(unix)]
@@ -302,8 +303,21 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection
             let file = fs::OpenOptions::new().create(true).append(*is_append).write(!is_append).truncate(!is_append).open(filename)?;
             command.stderr(file);
         }
-        let mut child = command.spawn()?;
-        child.wait()?;
+        
+        if run_background {
+            // Run in background without waiting
+            let child = command.spawn()?;
+            // Get the PID and increment job counter
+            let pid = child.id();
+            let mut counter = JOB_COUNTER.lock().unwrap();
+            *counter += 1;
+            let job_number = *counter;
+            println!("[{}] {}", job_number, pid);
+        } else {
+            // Run in foreground and wait
+            let mut child = command.spawn()?;
+            child.wait()?;
+        }
         Ok(())
     } else {
         Err(format!("{}: command not found", cmd).into())
@@ -866,7 +880,20 @@ fn main() {
                     continue;
                 }
 
-                let (parts, redirection) = parse_with_redirection(command);
+                let (mut parts, redirection) = parse_with_redirection(command);
+                if parts.is_empty() {
+                    continue;
+                }
+
+                // Check if the last token is &
+                let run_background = if !parts.is_empty() && parts[parts.len() - 1] == "&" {
+                    parts.pop(); // Remove the & token
+                    true
+                } else {
+                    false
+                };
+
+                // After removing &, check if there are still parts left
                 if parts.is_empty() {
                     continue;
                 }
@@ -1038,7 +1065,7 @@ fn main() {
                     }
                 } else {
                     let args = parts[1..].to_vec();
-                    if let Err(e) = execute_external_program(cmd, &args, redirection) {
+                    if let Err(e) = execute_external_program(cmd, &args, redirection, run_background) {
                         eprintln!("{}", e);
                     }
                 }
