@@ -446,7 +446,7 @@ fn main() {
                     // We have a registered completer for this command
                     // Run the completer script and get its output
                     let cmd_parts = vec![partial_cmd.to_string()];
-                    if let Some(mut candidates) = invoke_completer(&completer_path, &cmd_parts, 0, line, pos) {
+                    if let Some(candidates) = invoke_completer(&completer_path, &cmd_parts, 0, line, pos) {
                         // Handle multiple candidates
                         if candidates.is_empty() {
                             return Ok((pos, vec![]));
@@ -464,7 +464,7 @@ fn main() {
                         }
 
                         // Multiple candidates - use LCP logic
-                        let lcp = longest_common_prefix(&candidates);
+                        //let lcp = longest_common_prefix(&candidates);
                         let mut state = self.tab_state.lock().unwrap();
 
                         // Check if we're in the same completion context
@@ -622,7 +622,7 @@ fn main() {
                     let word_index = cmd_parts.len() - 1;
                     
                     // Run the completer script and get its output
-                    if let Some(mut candidates) = invoke_completer(&completer_path, &cmd_parts, word_index, line, pos) {
+                    if let Some(candidates) = invoke_completer(&completer_path, &cmd_parts, word_index, line, pos) {
                         // Get the position where we should start replacing
                         // This is right after the last space
                         let start_pos = last_space_pos + 1;
