@@ -7,10 +7,21 @@ use std::collections::{HashSet, HashMap};
 use std::sync::Mutex;
 use rustyline::config::CompletionType;
 
-// Global storage for registered completions
+// Job struct to track background jobs
+#[derive(Debug, Clone)]
+struct Job {
+    job_number: u32,
+    #[allow(dead_code)]
+    pid: u32,
+    command: String,
+    status: String,
+}
+
+// Global storage for registered completions and jobs
 lazy_static::lazy_static! {
     static ref COMPLETIONS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
     static ref JOB_COUNTER: Mutex<u32> = Mutex::new(0);
+    static ref JOBS: Mutex<Vec<Job>> = Mutex::new(Vec::new());
 }
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
@@ -284,7 +295,7 @@ fn parse_with_redirection(input: &str) -> (Vec<String>, Redirection) {
     (command_parts, redirection)
 }
 
-fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection, run_background: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection, run_background: bool, original_command: &str) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(program_path) = find_executable_in_path(cmd) {
         let mut command = process::Command::new(&program_path);
         #[cfg(unix)]
@@ -312,6 +323,18 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection
             let mut counter = JOB_COUNTER.lock().unwrap();
             *counter += 1;
             let job_number = *counter;
+            
+            // Store the job - use the command without the trailing &
+            let job_command = original_command.trim_end_matches('&').trim().to_string();
+            let job = Job {
+                job_number,
+                pid,
+                command: job_command,
+                status: "Running".to_string(),
+            };
+            let mut jobs = JOBS.lock().unwrap();
+            jobs.push(job);
+            
             println!("[{}] {}", job_number, pid);
         } else {
             // Run in foreground and wait
@@ -1002,8 +1025,15 @@ fn main() {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
                 } else if cmd == "jobs" {
-                    // Empty implementation for jobs builtin
-                    // Currently produces no output
+                    // List all background jobs
+                    let jobs = JOBS.lock().unwrap();
+                    for job in jobs.iter() {
+                        // Format: [job_number]+  Status                  command &
+                        // Status should be padded to 24 characters total
+                        let marker = "+";  // Always + since we only have one job at a time for now
+                        let status_padded = format!("{:<24}", job.status);
+                        println!("[{}]{}  {}{} &", job.job_number, marker, status_padded, job.command);
+                    }
                 } else if cmd == "complete" {
                     // Handle the complete builtin command
                     if parts.len() < 2 {
@@ -1065,7 +1095,7 @@ fn main() {
                     }
                 } else {
                     let args = parts[1..].to_vec();
-                    if let Err(e) = execute_external_program(cmd, &args, redirection, run_background) {
+                    if let Err(e) = execute_external_program(cmd, &args, redirection, run_background, command) {
                         eprintln!("{}", e);
                     }
                 }
