@@ -1025,14 +1025,30 @@ fn main() {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
                 } else if cmd == "jobs" {
-                    // List all background jobs
+                    // List all background jobs with proper markers
                     let jobs = JOBS.lock().unwrap();
-                    for job in jobs.iter() {
-                        // Format: [job_number]+  Status                  command &
-                        // Status should be padded to 24 characters total
-                        let marker = "+";  // Always + since we only have one job at a time for now
-                        let status_padded = format!("{:<24}", job.status);
-                        println!("[{}]{}  {}{} &", job.job_number, marker, status_padded, job.command);
+                    
+                    if !jobs.is_empty() {
+                        // Get the count of jobs
+                        let job_count = jobs.len();
+                        
+                        for (index, job) in jobs.iter().enumerate() {
+                            // Determine the marker for this job
+                            let marker = if index == job_count - 1 {
+                                // Most recent job (last in the list)
+                                "+"
+                            } else if index == job_count - 2 {
+                                // Second most recent job
+                                "-"
+                            } else {
+                                // All other jobs
+                                " "
+                            };
+                            
+                            // Format: [job_number]marker  Status                  command
+                            // Status should be aligned
+                            println!("[{}]{}  {:<24}{}", job.job_number, marker, job.status, job.command);
+                        }
                     }
                 } else if cmd == "complete" {
                     // Handle the complete builtin command
