@@ -11,17 +11,18 @@ use rustyline::config::CompletionType;
 #[derive(Debug, Clone)]
 struct Job {
     job_number: u32,
-    #[allow(dead_code)]
     pid: u32,
     command: String,
     status: String,
+    // We'll use a separate map to track child processes by PID
 }
 
-// Global storage for registered completions and jobs
+// Global storage for registered completions, jobs, and child processes
 lazy_static::lazy_static! {
     static ref COMPLETIONS: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
     static ref JOB_COUNTER: Mutex<u32> = Mutex::new(0);
     static ref JOBS: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+    static ref CHILD_PROCESSES: Mutex<HashMap<u32, Box<std::process::Child>>> = Mutex::new(HashMap::new());
 }
 
 fn find_executables_in_path_matching(prefix: &str) -> Vec<String> {
@@ -323,6 +324,10 @@ fn execute_external_program(cmd: &str, args: &[String], redirection: Redirection
             let mut counter = JOB_COUNTER.lock().unwrap();
             *counter += 1;
             let job_number = *counter;
+            
+            // Store the child process for later reaping
+            let mut children = CHILD_PROCESSES.lock().unwrap();
+            children.insert(pid, Box::new(child));
             
             // Store the job - use the command without the trailing &
             let job_command = original_command.trim_end_matches('&').trim().to_string();
@@ -1025,11 +1030,35 @@ fn main() {
                         eprintln!("cd: {}: No such file or directory", target_dir);
                     }
                 } else if cmd == "jobs" {
-                    // List all background jobs with proper markers
-                    let jobs = JOBS.lock().unwrap();
+                    // Check each job to see if it has exited
+                    let mut jobs = JOBS.lock().unwrap();
+                    let mut children = CHILD_PROCESSES.lock().unwrap();
+                    let mut completed_pids = Vec::new();
                     
+                    // Check status of each job
+                    for job in jobs.iter_mut() {
+                        if let Some(mut child) = children.remove(&job.pid) {
+                            // Try to get the status without blocking
+                            match child.try_wait() {
+                                Ok(Some(_status)) => {
+                                    // Process has exited
+                                    job.status = "Done".to_string();
+                                    completed_pids.push(job.pid);
+                                }
+                                Ok(None) => {
+                                    // Process is still running, put it back
+                                    children.insert(job.pid, child);
+                                }
+                                Err(_) => {
+                                    // Error checking status, put it back
+                                    children.insert(job.pid, child);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Display all jobs
                     if !jobs.is_empty() {
-                        // Get the count of jobs
                         let job_count = jobs.len();
                         
                         for (index, job) in jobs.iter().enumerate() {
@@ -1045,11 +1074,20 @@ fn main() {
                                 " "
                             };
                             
-                            // Format: [job_number]marker  Status                  command
-                            // Status should be aligned
-                            println!("[{}]{}  {:<24}{}", job.job_number, marker, job.status, job.command);
+                            // Format output based on status
+                            if job.status == "Done" {
+                                // Done jobs don't have trailing &
+                                println!("[{}]{}  {:<24}{}", job.job_number, marker, job.status, job.command);
+                            } else {
+                                // Running jobs have trailing &
+                                println!("[{}]{}  {:<24}{} &", job.job_number, marker, job.status, job.command);
+                            }
                         }
                     }
+                    
+                    // Remove completed jobs
+                    jobs.retain(|job| job.status != "Done");
+                    
                 } else if cmd == "complete" {
                     // Handle the complete builtin command
                     if parts.len() < 2 {
